@@ -56,13 +56,13 @@ async function main() {
     resource: "gpu", unit: "hour", unitPrice: offerPrice, terms: "per-hour billing",
     requirements: { cuda: "13.0", gpu: "H200" },
     agentRegistry: registry,
-    agentId: "GPUVendorAlpha", wallet: sellerWallet, pulseMinutes: 145,
+    agentId: "2", wallet: sellerWallet, pulseMinutes: 145,
   });
   const buyer = await postJson<{ intentId: string; matched: boolean; wssUrl: string }>("http://localhost:3001/intents", {
     resource: "gpu", qty: 1, unit: "hour", maxUnitPrice: buyerPrice,
     requirements: { cuda: "13.0", gpu: "H200" },
     agentRegistry: registry,
-    agentId: "ResearchBot", wallet: buyerWallet,
+    agentId: "1", wallet: buyerWallet,
   });
   line(C.sys, `STEP 1  · seller offer posted   -> ${seller.offerId} (pulse ${seller.matched ? "matched-immediately" : "waiting"})`);
   line(C.sys, `STEP 1  · buyer intent posted  -> ${buyer.intentId} matched=${buyer.matched}`);
@@ -72,7 +72,7 @@ async function main() {
   const mk = (role: "buyer" | "seller", price: number): AgentDeps => ({
     wsUrl: buyer.wssUrl,
     role,
-    identity: { agentRegistry: registry, agentId: role === "buyer" ? "ResearchBot" : "GPUVendorAlpha", wallet: role === "buyer" ? buyerWallet : sellerWallet },
+    identity: { agentRegistry: registry, agentId: role === "buyer" ? "1" : "2", wallet: role === "buyer" ? buyerWallet : sellerWallet },
     ctx: {
       price,
       qty: 1,

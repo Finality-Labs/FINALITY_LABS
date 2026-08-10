@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "echo 'orchestrator: no build needed (tsx runtime)'",
     "e2e": "tsx src/run-e2e.ts",
     "test": "tsx src/run-e2e.ts",
     "start": "tsx src/start-all.ts",
@@ -15,7 +16,8 @@
     "@finality/intake": "*",
     "@finality/negotiate": "*",
     "@finality/chain": "*",
-    "@finality/reference-agent": "*"
+    "@finality/reference-agent": "*",
+    "@finality/verification": "*"
   },
   "devDependencies": {
     "typescript": "^5.4.5",

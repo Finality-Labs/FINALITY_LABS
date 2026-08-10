@@ -3,8 +3,8 @@
  *
  * Boots the whole merged system (intake + negotiate + chain), then drives a
  * complete deal as the artifact's cast would:
- *   1. Buyer (ResearchBot) POSTs an intent  (5h H100 @ max $20) to intake.
- *   2. Seller (GPUVendorAlpha) POSTs an offer (H100 @ $18/hr) to intake.
+ *   1. Buyer (Agent #1) POSTs an intent  (5h H100 @ max $20) to intake.
+ *   2. Seller (Agent #2) POSTs an offer (H100 @ $18/hr) to intake.
  *   3. Intake MATCHES them -> returns roomId + wssUrl.
  *   4. Both agents connect to the WS room and negotiate (Part 4 client + Part 2 venue).
  *   5. Deal closes -> negotiate notifies chain (Part 3).
@@ -16,6 +16,8 @@
 import { startSystem } from "./start-all.js";
 import { negotiate, type NegotiationPolicy, type PartyIdentity } from "../../reference-agent/src/negotiate.js";
 import { reputation } from "../../chain/src/reputation.js";
+import { VerificationManager, MockVerifier } from "@finality/verification";
+import { setVerificationManagerInstance } from "../../negotiate/src/settle.js";
 
 const REG = "eip155:84532:0x8004A818BFB912233c491871b3d84c89A494BD9e";
 const HTTP = "http://localhost:3001";
@@ -31,12 +33,33 @@ async function postJson(url: string, body: unknown): Promise<any> {
 }
 
 async function main() {
+  // Configure test-specific verification manager with mock verifier that always passes
+  const testVerificationManager = new VerificationManager({
+    verifiers: [
+      {
+        id: "mock-verifier",
+        name: "Mock Verifier",
+        enabled: true,
+        priority: 1,
+        required: false,
+        timeoutMs: 5000,
+      },
+    ],
+    stopOnRequiredFailure: true,
+    overallTimeoutMs: 10000,
+  });
+  testVerificationManager.registerVerifier(new MockVerifier({ id: "mock-verifier", name: "Mock Verifier" }));
+  setVerificationManagerInstance(testVerificationManager);
+  // Ensure it's initialized
+  await testVerificationManager.init();
+
   const sys = await startSystem();
   console.log("✅ System booted (intake:3001, negotiate:3002, chain:3003)\n");
 
   // 1 + 2: post intent & offer
-  const buyerId = { agentRegistry: REG, agentId: "ResearchBot", wallet: "0xab1234567890abcdef1234567890abcdef1234" };
-  const sellerId = { agentRegistry: REG, agentId: "GPUVendorAlpha", wallet: "0xcd4567890abcdef1234567890abcdef123456" };
+  // agentId values are ERC-8004 numeric tokenIds (decimal strings) per ERC-721.
+  const buyerId = { agentRegistry: REG, agentId: "1", wallet: "0xab1234567890abcdef1234567890abcdef1234" };
+  const sellerId = { agentRegistry: REG, agentId: "2", wallet: "0xcd4567890abcdef1234567890abcdef123456" };
 
   const intent = await postJson(`${HTTP}/intents`, {
     resource: "gpu", qty: 2, unit: "hour", maxUnitPrice: 20,
@@ -79,11 +102,11 @@ async function main() {
   await new Promise((r) => setTimeout(r, 500));
 
   // 6: assert chain recorded reputation + settlement
-  const sellerRep = reputation.getReputation("GPUVendorAlpha");
-  const buyerRep = reputation.getReputation("ResearchBot");
+  const sellerRep = reputation.getReputation("2");
+  const buyerRep = reputation.getReputation("1");
   console.log("\n6. Chain reputation after settlement:");
-  console.log("   GPUVendorAlpha:", JSON.stringify(sellerRep));
-  console.log("   ResearchBot:  ", JSON.stringify(buyerRep));
+  console.log("   Agent #2:", JSON.stringify(sellerRep));
+  console.log("   Agent #1:  ", JSON.stringify(buyerRep));
   if (sellerRep.count < 1 || buyerRep.count < 1) throw new Error("chain did not record reputation");
 
   console.log("\n✅ END-TO-END PASS: intent → match → negotiate → deal → settle → reputation.");

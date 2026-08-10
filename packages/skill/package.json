@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "echo 'skill package: no build needed'",
     "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {

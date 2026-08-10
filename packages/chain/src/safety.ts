@@ -28,6 +28,16 @@ export interface SafetyResult {
 
 const DEFAULT_NORMAL = 50;
 
+/** Default safety policy — the $50-vs-$500 guard (spec §6). */
+export const DEFAULT_POLICY: SafetyPolicy = {
+  vaultBalance: 10_000,
+  maxSingleTrade: 50,
+  dailyBudget: 500,
+  anomalyMultiplier: 10,
+  normal: 50,
+  dailySpent: 0,
+};
+
 /**
  * Evaluate a single trade amount (USDC) against the safety policy.
  * Returns { allow:false, reason } on the FIRST rule that blocks.

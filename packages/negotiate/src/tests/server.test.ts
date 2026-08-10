@@ -1,6 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { WebSocket } from "ws";
 import { startServer } from "../index.js";
+import { VerificationManager, MockVerifier } from "@finality/verification";
+import { setVerificationManagerInstance } from "../settle.js";
 
 const PORT = 3099; // dedicated test port to avoid clashing with :3002 dev
 const DEALS_PORT = 3098;
@@ -35,9 +37,25 @@ describe("negotiate server (integration)", () => {
   let lastDeal: any = null;
 
   beforeAll(async () => {
-    process.env.DEALS_URL = `http://localhost:${DEALS_PORT}/deals`;
-    wss = startServer(PORT);
-    // Local Part 3 stub on DEALS_PORT returning 200.
+    // Configure test-specific verification manager with mock verifier that always passes
+    const testVerificationManager = new VerificationManager({
+      verifiers: [
+        {
+          id: "mock-verifier",
+          name: "Mock Verifier",
+          enabled: true,
+          priority: 1,
+          required: false,
+          timeoutMs: 5000,
+        },
+      ],
+      stopOnRequiredFailure: true,
+      overallTimeoutMs: 10000,
+    });
+    testVerificationManager.registerVerifier(new MockVerifier({ id: "mock-verifier", name: "Mock Verifier" }));
+    setVerificationManagerInstance(testVerificationManager);
+
+    // Start deals server first
     const http = await import("node:http");
     dealsServer = http.createServer((req, res) => {
       if (req.method === "POST" && req.url === "/deals") {
@@ -53,7 +71,23 @@ describe("negotiate server (integration)", () => {
         res.end();
       }
     });
-    await new Promise<void>((r) => dealsServer.listen(DEALS_PORT, r));
+    await new Promise<void>((resolve, reject) => {
+      dealsServer.listen(DEALS_PORT, "127.0.0.1", () => {
+        console.log(`[test] dealsServer listening on 127.0.0.1:${DEALS_PORT}`);
+        resolve();
+      });
+      dealsServer.on("error", reject);
+    });
+    
+    // Extra delay to ensure server is fully ready
+    await new Promise((r) => setTimeout(r, 1000));
+    
+    process.env.DEALS_URL = `http://127.0.0.1:${DEALS_PORT}/deals`;
+    wss = startServer(PORT);
+  });
+
+  beforeEach(() => {
+    lastDeal = null;
   });
 
   afterAll(async () => {
@@ -90,7 +124,6 @@ describe("negotiate server (integration)", () => {
   });
 
   it("full two-client run produces deal-closed + a hash + POST to Part 3", async () => {
-    lastDeal = null;
     const b = await connect("room_integ_2", "buyer", {
       agentRegistry: "eip155:84532:0x8004A818BFB912233c491871b3d84c89A494BD9e",
       agentId: "1",
@@ -114,8 +147,14 @@ describe("negotiate server (integration)", () => {
     expect(closed.deal.unitPrice).toBe(20);
     expect(closed.transcriptHash).toMatch(/^0x[0-9a-f]{64}$/);
 
-    // give the server a tick to POST to the stub
-    await new Promise((r) => setTimeout(r, 100));
+    // give the server time to POST to the stub
+    await new Promise((r) => setTimeout(r, 500));
+    // Poll for lastDeal with retries
+    let attempts = 0;
+    while (!lastDeal && attempts < 20) {
+      await new Promise((r) => setTimeout(r, 100));
+      attempts++;
+    }
     expect(lastDeal).toBeTruthy();
     expect(lastDeal.roomId).toBe("room_integ_2");
     expect(lastDeal.transcriptHash).toBe(closed.transcriptHash);

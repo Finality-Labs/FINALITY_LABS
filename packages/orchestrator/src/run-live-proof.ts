@@ -21,7 +21,8 @@ import { startSystem } from "./start-all.js";
 import { negotiate, type NegotiationPolicy, type PartyIdentity } from "../../reference-agent/src/negotiate.js";
 import { loadChainConfig, isLiveReady } from "../../chain/src/config.js";
 
-const REG = "eip155:48816:0x556089008Fc0a60cD09390Eca93477ca254A5522";
+const REG =
+  "eip155:48816:0x54B8d8E2455946f2A5B8982283f2359812e815ce";
 const HTTP = "http://localhost:3001";
 const CHAIN = "http://localhost:3003";
 const AGENT_URI = process.env.GOAT_AGENT_URI ?? "https://finality.example/agent.json";
@@ -59,11 +60,11 @@ async function main() {
 
   // 1-3. intent + offer -> match. Small amounts: 2 @ $10 = $20 (< $50 cap).
   const intent = await postJson(`${HTTP}/intents`, {
-    resource: "gpu", qty: 2, unit: "hour", maxUnitPrice: 10, requirements: { gpu: "H100" }, ...buyerId,
+    resource: "gpu", qty: 2, unit: "hour", maxUnitPrice: 0.0001, requirements: { gpu: "H100" }, ...buyerId,
   });
   console.log("1. Buyer intent:", intent.intentId);
   const offer = await postJson(`${HTTP}/offers`, {
-    resource: "gpu", unit: "hour", unitPrice: 8, terms: "per-hour", requirements: { gpu: "H100" }, ...sellerId,
+    resource: "gpu", unit: "hour", unitPrice: 0.0001, terms: "per-hour", requirements: { gpu: "H100" }, ...sellerId,
   });
   console.log("2. Seller offer:", offer.offerId);
   const match = intent.matched ? intent : offer.matched ? offer : null;
@@ -71,8 +72,8 @@ async function main() {
   console.log(`3. MATCHED -> ${match.roomId}\n`);
 
   // 4-5. negotiate to close.
-  const buyerPolicy: NegotiationPolicy = { role: "buyer", price: 10, qty: 2, terms: "per-hour", requirements: { gpu: "H100" } };
-  const sellerPolicy: NegotiationPolicy = { role: "seller", price: 8, qty: 2, terms: "per-hour", requirements: { gpu: "H100" } };
+  const buyerPolicy: NegotiationPolicy = { role: "buyer", price: 0.0001, qty: 2, terms: "per-hour", requirements: { gpu: "H100" } };
+  const sellerPolicy: NegotiationPolicy = { role: "seller", price: 0.0001, qty: 2, terms: "per-hour", requirements: { gpu: "H100" } };
   const [b] = await Promise.all([
     negotiate(match.wssUrl, buyerPolicy, buyerId, { timeoutMs: 15000, log: (s) => console.log("  b:", s) }),
     negotiate(match.wssUrl, sellerPolicy, sellerId, { timeoutMs: 15000, log: (s) => console.log("  s:", s) }),
@@ -98,8 +99,24 @@ async function main() {
   if (dealResult.explorerUrl) console.log("   explorer:", dealResult.explorerUrl);
   console.log("   reputation:", JSON.stringify(dealResult.reputation));
 
-  if (dealResult.mode !== "live") throw new Error("expected live settlement");
-  console.log("\n✅ LIVE PROOF PASS: on-chain register + settle + ERC-8004 reputation.");
+
+  if (dealResult.mode !== "live") {
+  throw new Error("expected live settlement");
+}
+
+const reputationOnchain =
+  dealResult.reputation?.buyer?.mode === "onchain" &&
+  dealResult.reputation?.seller?.mode === "onchain";
+
+if (!reputationOnchain) {
+  throw new Error(
+    "Settlement succeeded, but ERC-8004 reputation was not recorded on-chain"
+  );
+}
+
+console.log(
+  "\n✅ LIVE PROOF PASS: on-chain register + settle + ERC-8004 reputation."
+);
   await sys.close();
   process.exit(0);
 }

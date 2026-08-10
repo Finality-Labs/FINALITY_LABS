@@ -5,6 +5,7 @@
  * credentials and tests stay keyless. Set CHAIN_MODE=live + the GOAT vars to
  * settle real transactions on GOAT Network.
  *
+ * Core Chain Config:
  *   CHAIN_MODE           mock | live         (default: mock)
  *   GOAT_NETWORK         goat-testnet | goat-mainnet (default: goat-testnet)
  *   GOAT_RPC_URL         RPC endpoint        (default: SDK's bundled RPC for the network)
@@ -12,6 +13,17 @@
  *   GOAT_SETTLE_TOKEN    ERC-20 token address to transfer as payment.
  *                        Omit to settle in native gas token via transferNative.
  *   GOAT_TOKEN_DECIMALS  decimals for GOAT_SETTLE_TOKEN (default: 18; USDC=6)
+ *   GITHUB_TOKEN         GitHub PAT with 'gist' scope for agent registration Gist upload
+ *
+ * GOAT Flow x402 Config (Stage 1 — Testnet3 only):
+ *   GOAT_FLOW_X402_BASE_URL        Base URL for GOAT Flow API (e.g., https://flow-api.testnet3.goat.network)
+ *   GOAT_FLOW_X402_API_KEY         Merchant API key from GOAT Flow dashboard
+ *   GOAT_FLOW_X402_API_SECRET      Merchant API secret from GOAT Flow dashboard
+ *   GOAT_FLOW_X402_PAY_TO          Receiving wallet address (payTo) for settlements
+ *   GOAT_FLOW_X402_SETTLE_TOKEN    ERC-20 token contract address (optional; omit for native GOAT)
+ *   GOAT_FLOW_X402_TOKEN_DECIMALS  Decimals for settle token (default: 18)
+ *   GOAT_FLOW_X402_TIMEOUT_MS      Request timeout in milliseconds (default: 30000)
+ *   GOAT_FLOW_X402_IDEMPOTENCY_KEY_PREFIX  Prefix for idempotency keys (default: "finality_")
  */
 
 export type ChainMode = "mock" | "live";
@@ -21,8 +33,10 @@ export interface ChainConfig {
   network: string;
   rpcUrl?: string;
   privateKey?: string;
+  feedbackPrivateKey?: string;
   settleToken?: string;
   tokenDecimals: number;
+  githubToken?: string;
 }
 
 // GOAT networks the SDK ships (chainId + default RPC). Mirrored here so we can
@@ -41,10 +55,16 @@ export function loadChainConfig(env: NodeJS.ProcessEnv = process.env): ChainConf
     network,
     rpcUrl: env.GOAT_RPC_URL ?? fallbackRpc,
     privateKey: env.GOAT_PRIVATE_KEY,
+    feedbackPrivateKey: env.GOAT_FEEDBACK_PRIVATE_KEY,
     settleToken: env.GOAT_SETTLE_TOKEN,
     tokenDecimals: env.GOAT_TOKEN_DECIMALS ? Number(env.GOAT_TOKEN_DECIMALS) : 18,
+    githubToken: env.GITHUB_TOKEN,
   };
 }
+
+// Re-export x402 configuration for convenience
+export { loadX402Config, isX402Ready, GOAT_TESTNET3_TOKENS, resolveTestnet3Token } from './x402Config.js';
+export type { X402Config } from './x402Config.js';
 
 /** True when live mode has the minimum it needs to actually transact. */
 export function isLiveReady(cfg: ChainConfig): { ready: boolean; reason?: string } {

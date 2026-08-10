@@ -32,37 +32,6 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       min-height: 100vh;
       overflow-x: hidden;
-      cursor: none;
-    }
-
-    body.cursor-down .cursor { transform: translate(-50%, -50%) scale(.92); }
-    body.cursor-hover .cursor { width: 12px; height: 12px; }
-    body.cursor-hover .cursor-follower { width: 56px; height: 56px; border-color: rgba(0,0,0,.24); background: rgba(0,0,0,.03); }
-
-    .cursor,
-    .cursor-follower {
-      position: fixed;
-      top: 0;
-      left: 0;
-      transform: translate(-50%, -50%);
-      pointer-events: none;
-      z-index: 9999;
-      will-change: transform, width, height, opacity;
-    }
-    .cursor {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #111;
-      transition: width .16s ease, height .16s ease, background .16s ease, opacity .12s ease, transform .1s ease;
-    }
-    .cursor-follower {
-      width: 36px;
-      height: 36px;
-      border: 1px solid rgba(0,0,0,.18);
-      border-radius: 50%;
-      background: rgba(255,255,255,.18);
-      transition: width .2s ease, height .2s ease, border-color .2s ease, background .2s ease, opacity .12s ease;
     }
 
     .page {
@@ -267,7 +236,6 @@
       padding: 12px 16px;
       font: inherit;
       font-size: 14px;
-      cursor: none;
       transition: transform .15s ease, background .15s ease, color .15s ease;
     }
 
@@ -386,6 +354,87 @@
       letter-spacing: .12em;
     }
 
+    .pipeline {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 4px 0;
+    }
+    .pipeline-step {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.6);
+      border-radius: 4px;
+      font-size: 13px;
+      transition: background .15s ease, border-color .15s ease;
+    }
+    .pipeline-step.active {
+      background: rgba(17,17,17,.06);
+      border-color: var(--line-strong);
+    }
+    .pipeline-step.done {
+      background: rgba(63,185,80,.12);
+      border-color: rgba(63,185,80,.4);
+    }
+    .pipeline-step.error {
+      background: rgba(211,47,47,.12);
+      border-color: rgba(211,47,47,.4);
+    }
+    .pipeline-step .step-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--line);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .pipeline-step.active .step-num {
+      background: #111;
+      color: #fff;
+    }
+    .pipeline-step.done .step-num {
+      background: #3fb950;
+      color: #fff;
+    }
+    .pipeline-step.error .step-num {
+      background: #d32f2f;
+      color: #fff;
+    }
+    .pipeline-step .step-label {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .pipeline-step .step-connector {
+      position: relative;
+      left: 12px;
+      width: 2px;
+      height: 100%;
+      background: var(--line);
+    }
+    .pipeline-step:last-child .step-connector {
+      display: none;
+    }
+    .pipeline-step .step-detail {
+      display: block;
+      margin-top: 4px;
+      margin-left: 36px;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
     .footer {
       margin-top: 16px;
       color: var(--muted);
@@ -441,12 +490,29 @@
         <div>
           <div class="hero-mark"></div>
           <div class="footer">
-            The cursor is custom, the theme is monochrome, and the negotiation flow is real.
+            The theme is monochrome, and the negotiation flow is real.
           </div>
         </div>
       </section>
 
       <section class="right">
+        <div class="panel" id="pipelinePanel">
+          <h2>Pipeline</h2>
+          <div class="pipeline" id="pipeline">
+            <div class="pipeline-step" data-step="1"><span class="step-num">1</span><span class="step-label">ERC-8004 Identity</span><span class="step-connector"></span></div>
+            <div class="pipeline-step" data-step="2"><span class="step-num">2</span><span class="step-label">Buyer Intent</span><span class="step-connector"></span></div>
+            <div class="pipeline-step" data-step="3"><span class="step-num">3</span><span class="step-label">Seller Offer</span><span class="step-connector"></span></div>
+            <div class="pipeline-step" data-step="4"><span class="step-num">4</span><span class="step-label">Matching</span><span class="step-connector"></span></div>
+            <div class="pipeline-step" data-step="5"><span class="step-num">5</span><span class="step-label">Room Created</span><span class="step-connector"></span></div>
+            <div class="pipeline-step" data-step="6"><span class="step-num">6</span><span class="step-label">Agent Negotiation</span><span class="step-connector"></span></div>
+            <div class="pipeline-step" data-step="7"><span class="step-num">7</span><span class="step-label">Deal Closed</span><span class="step-connector"></span></div>
+            <div class="pipeline-step" data-step="8"><span class="step-num">8</span><span class="step-label">Verification</span><span class="step-connector"></span></div>
+            <div class="pipeline-step" data-step="9"><span class="step-num">9</span><span class="step-label">x402 Payment</span><span class="step-connector"></span></div>
+            <div class="pipeline-step" data-step="10"><span class="step-num">10</span><span class="step-label">GOAT Settlement</span><span class="step-connector"></span></div>
+            <div class="pipeline-step" data-step="11"><span class="step-num">11</span><span class="step-label">ERC-8004 Reputation</span><span class="step-connector"></span></div>
+          </div>
+        </div>
+
         <form class="panel" id="dealForm">
           <h2>Run a deal</h2>
           <p class="sub">
@@ -470,24 +536,6 @@
             <div class="field">
               <label for="timeoutMs">Agent timeout ms</label>
               <input id="timeoutMs" type="number" value="120000" min="1000" step="1000" />
-            </div>
-
-            <div class="field">
-              <label for="buyerAgentId">Buyer agent</label>
-              <input id="buyerAgentId" value="ResearchBot" />
-            </div>
-            <div class="field">
-              <label for="sellerAgentId">Seller agent</label>
-              <input id="sellerAgentId" value="GPUVendorAlpha" />
-            </div>
-
-            <div class="field">
-              <label for="buyerWallet">Buyer wallet</label>
-              <input id="buyerWallet" placeholder="0x..." />
-            </div>
-            <div class="field">
-              <label for="sellerWallet">Seller wallet</label>
-              <input id="sellerWallet" placeholder="0x..." />
             </div>
 
             <div class="field">
@@ -548,8 +596,6 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const cursor = $("cursor");
-    const follower = $("cursorFollower");
     const dealForm = $("dealForm");
     const runBtn = $("runBtn");
     const resetBtn = $("resetBtn");
@@ -559,10 +605,6 @@
     const settlementValue = $("settlementValue");
     const hashValue = $("hashValue");
     const logBox = $("log");
-
-<script>
-  const $ = (id) => document.getElementById(id);
-  const btn = $("run");
 
   // Show whether the chain service is settling live or mock.
   (async () => {
@@ -575,139 +617,216 @@
     } catch {}
   })();
 
-  btn.onclick = async () => {
-    btn.disabled = true; btn.textContent = "Running negotiation…";
-    const body = {
-      resource: $("resource").value.trim(),
-      gpu: $("gpu").value.trim(),
-      qty: +$("qty").value,
-      buyerMax: +$("buyerMax").value,
-      sellerFloor: +$("sellerFloor").value,
-    };
+  function setStatus(kind, label) {
+    statusText.textContent = label;
+    statusBadge.style.borderColor = kind === "good" ? "#111" : "rgba(21,21,21,.3)";
+    statusBadge.style.background = kind === "good" ? "rgba(17,17,17,.08)" : "rgba(255,255,255,.7)";
+  }
 
-    function setStatus(kind, label) {
-      statusText.textContent = label;
-      statusBadge.style.borderColor = kind === "good" ? "#111" : "rgba(21,21,21,.3)";
-      statusBadge.style.background = kind === "good" ? "rgba(17,17,17,.08)" : "rgba(255,255,255,.7)";
+  function shorten(value, size = 8) {
+    if (!value) return "—";
+    return value.length > size * 2 ? `${value.slice(0, size)}…${value.slice(-size)}` : value;
+  }
+
+  function renderLog(lines) {
+    logBox.textContent = (lines && lines.length) ? lines.join("\n") : "Ready.";
+  }
+
+  function updatePipeline(data) {
+    const steps = document.querySelectorAll("#pipeline .pipeline-step");
+    // Reset all
+    steps.forEach(s => {
+      s.classList.remove("active", "done", "error");
+      const detail = s.querySelector(".step-detail");
+      if (detail) detail.remove();
+    });
+    
+    if (!data) return;
+    
+    const matched = data?.matched === true;
+    const closed = data?.result?.kind === "deal-closed";
+    const hasIdentity = data?.identity?.buyer && data?.identity?.seller;
+    const hasSettlement = data?.settlement;
+    const hasTxHash = data?.settlement?.txHash;
+    const hasReputation = data?.reputation?.buyer && data?.reputation?.seller;
+    const hasLog = data?.log && data.log.length > 0;
+    
+    // Helper to add detail text
+    function addDetail(stepEl, text) {
+      if (!text) return;
+      const detail = document.createElement("div");
+      detail.className = "step-detail";
+      detail.textContent = text;
+      stepEl.appendChild(detail);
     }
-
-    function shorten(value, size = 8) {
-      if (!value) return "—";
-      return value.length > size * 2 ? `${value.slice(0, size)}…${value.slice(-size)}` : value;
+    
+    // Step 1: ERC-8004 Identity
+    if (hasIdentity) {
+      steps[0].classList.add("done");
+      const buyerId = data.identity.buyer?.agentId || "—";
+      const sellerId = data.identity.seller?.agentId || "—";
+      addDetail(steps[0], `Buyer Agent ID: ${buyerId}\nSeller Agent ID: ${sellerId}`);
     }
-
-    function bindCursor() {
-      const hoverables = "button,input,select,a,label,.panel,.chip,.status-badge,.badge";
-      document.addEventListener("pointermove", (e) => {
-        state.x = e.clientX;
-        state.y = e.clientY;
-        cursor.style.left = `${state.x}px`;
-        cursor.style.top = `${state.y}px`;
-      });
-      document.addEventListener("pointerdown", () => {
-        state.down = true;
-        document.body.classList.add("cursor-down");
-      });
-      document.addEventListener("pointerup", () => {
-        state.down = false;
-        document.body.classList.remove("cursor-down");
-      });
-      document.addEventListener("pointerover", (e) => {
-        const target = e.target instanceof Element ? e.target : null;
-        if (target && target.closest(hoverables)) {
-          document.body.classList.add("cursor-hover");
-        }
-      });
-      document.addEventListener("pointerout", (e) => {
-        const target = e.target instanceof Element ? e.target : null;
-        if (target && target.closest(hoverables)) {
-          document.body.classList.remove("cursor-hover");
-        }
-      });
-
-      (function tick() {
-        state.fx += (state.x - state.fx) * 0.18;
-        state.fy += (state.y - state.fy) * 0.18;
-        follower.style.left = `${state.fx}px`;
-        follower.style.top = `${state.fy}px`;
-        requestAnimationFrame(tick);
-      })();
-    }
-
-    function renderLog(lines) {
-      logBox.textContent = (lines && lines.length) ? lines.join("\n") : "Ready.";
-    }
-
-    function renderOutcome(data) {
-      const closed = data?.result?.kind === "deal-closed";
-      const title = closed ? "Deal closed" : data?.matched ? `Ended: ${data?.result?.kind || "no deal"}` : "No match";
-      setStatus(closed ? "good" : "idle", title);
-
-      if (!data?.matched) {
-        dealValue.innerHTML = `<small>No matching buyer/seller terms.</small>`;
-        settlementValue.innerHTML = `<small>Nothing settled.</small>`;
-        hashValue.innerHTML = `<small>Adjust the input terms and rerun.</small>`;
-      } else {
-        const unit = data?.result?.unitPrice ?? "—";
-        const qty = data?.result?.qty ?? "—";
-        const total = data?.total != null ? Number(data.total).toFixed(6) : "—";
-        dealValue.innerHTML = `${unit} <small>/ unit</small><br><small>${qty} qty, total ${total}</small>`;
-        const settlement = data?.settlement?.response;
-        if (settlement?.ok) {
-          const body = settlement.body || {};
-          const txHash = body.txHash || "—";
-          const explorerUrl = body.explorerUrl || null;
-          settlementValue.innerHTML = explorerUrl
-            ? `<a href="${explorerUrl}" target="_blank" rel="noreferrer">${shorten(txHash, 10)}</a><br><small>Live ${body.mode || "settlement"}</small>`
-            : `${shorten(txHash, 10)}<br><small>${body.mode || "settlement"}</small>`;
-          hashValue.innerHTML = `<code>${data?.result?.transcriptHash || "—"}</code>`;
-        } else if (settlement) {
-          settlementValue.innerHTML = `<small>Chain returned ${settlement.response.status || 0}</small>`;
-          hashValue.innerHTML = `<code>${data?.result?.transcriptHash || "—"}</code>`;
-        } else {
-          settlementValue.innerHTML = `<small>Waiting for settlement callback.</small>`;
-          hashValue.innerHTML = `<code>${data?.result?.transcriptHash || "—"}</code>`;
+    
+    // Steps 2-4: Intent, Offer, Matching
+    if (matched) {
+      steps[1].classList.add("done"); // Buyer Intent
+      steps[2].classList.add("done"); // Seller Offer
+      steps[3].classList.add("done"); // Matching
+      steps[4].classList.add("done"); // Room Created
+      
+      // Extract intent/offer details from log
+      let buyerIntent = "—", sellerOffer = "—", roomId = "—";
+      if (data.log) {
+        for (const line of data.log) {
+          if (line.startsWith("Buyer intent posted:")) buyerIntent = line.replace("Buyer intent posted: ", "");
+          if (line.startsWith("Seller offer posted:")) sellerOffer = line.replace("Seller offer posted: ", "");
+          if (line.startsWith("MATCHED -> room")) roomId = line.replace("MATCHED -> room ", "");
         }
       }
+      addDetail(steps[1], `Intent ID: ${buyerIntent}`);
+      addDetail(steps[2], `Offer ID: ${sellerOffer}`);
+      addDetail(steps[3], `Matched`);
+      addDetail(steps[4], `Room: ${roomId}`);
+    }
+    
+    // Step 6: Agent Negotiation
+    if (hasLog) {
+      steps[5].classList.add("done");
+      // Show last few negotiation events
+      const negEvents = data.log.filter(l => l.startsWith("buyer:") || l.startsWith("seller:")).slice(-3);
+      addDetail(steps[5], negEvents.join("\n"));
+    }
+    
+    // Step 7: Deal Closed
+    if (closed) {
+      steps[6].classList.add("done");
+      const unit = data.result?.unitPrice ?? "—";
+      const qty = data.result?.qty ?? "—";
+      const terms = data.result?.terms ?? "—";
+      const hash = data.result?.transcriptHash ?? "—";
+      addDetail(steps[6], `Price: ${unit}\nQty: ${qty}\nTerms: ${terms}\nTranscript: ${shorten(hash)}`);
+    }
+    
+    // Step 8: Verification — leave pending (no explicit API signal)
+    addDetail(steps[7], "Pending / Not reported");
+    
+    // Step 9: x402 Payment — leave pending (no explicit API signal)
+    // Update label to indicate pending integration
+    if (!steps[8].classList.contains("done") && !steps[8].classList.contains("error")) {
+      const label = steps[8].querySelector(".step-label");
+      if (label && label.textContent === "x402 Payment") {
+        label.textContent = "x402 Integration Pending";
+      }
+    }
+    addDetail(steps[8], "x402 Integration Pending");
+    
+    // Step 10: GOAT Settlement
+    if (hasTxHash) {
+      steps[9].classList.add("done");
+      const mode = data.settlement?.mode || "settlement";
+      const txHash = data.settlement?.txHash || "—";
+      const explorerUrl = data.settlement?.explorerUrl;
+      const txLink = explorerUrl ? `<a href="${explorerUrl}" target="_blank" rel="noreferrer">${shorten(txHash)}</a>` : shorten(txHash);
+      addDetail(steps[9], `Mode: ${mode}\nTx: ${txLink}`);
+    }
+    
+    // Step 11: Reputation
+    if (hasReputation) {
+      steps[10].classList.add("done");
+      const buyerRep = data.reputation?.buyer;
+      const sellerRep = data.reputation?.seller;
+      const buyerTx = buyerRep?.txHash ? `<a href="${explorerBase(buyerRep.txHash)}" target="_blank" rel="noreferrer">${shorten(buyerRep.txHash)}</a>` : "—";
+      const sellerTx = sellerRep?.txHash ? `<a href="${explorerBase(sellerRep.txHash)}" target="_blank" rel="noreferrer">${shorten(sellerRep.txHash)}</a>` : "—";
+      addDetail(steps[10], `Buyer: count=${buyerRep?.count ?? 0}, score=${buyerRep?.summaryValue ?? 0}\nSeller: count=${sellerRep?.count ?? 0}, score=${sellerRep?.summaryValue ?? 0}`);
+    }
+    
+    // If no match, mark first 4 as error
+    if (!matched && data?.matched === false) {
+      steps[0].classList.add("error");
+      steps[1].classList.add("error");
+      steps[2].classList.add("error");
+      steps[3].classList.add("error");
+      addDetail(steps[0], "Registration failed");
+      addDetail(steps[1], "No match");
+      addDetail(steps[2], "No match");
+      addDetail(steps[3], "No match");
+    }
+  }
+  
+  // Helper to build explorer URL from tx hash (mock mode uses local)
+  function explorerBase(txHash) {
+    // In mock mode, there's no real explorer; return hash as-is for display
+    return "#";
+  }
 
-      if (!closed) {
-        const fallback = data?.fallback;
-        const extra = fallback
-          ? `<div class="kv wide" style="margin-top:12px;">
-              <div class="k">Fallback</div>
-              <div class="v">${fallback.message || "No deal closed."}<br><small>${fallback.suggestedAction || "Rerun with a wider price spread."}</small></div>
-            </div>`
-          : `<div class="kv wide" style="margin-top:12px;">
-              <div class="k">Fallback</div>
-              <div class="v"><small>No deal closed. Widen the spread or use deterministic mode.</small></div>
-            </div>`;
-        const outcomePanel = document.querySelector(".panel .grid-2");
-        if (outcomePanel) {
-          const existing = document.getElementById("fallbackBox");
-          if (existing) existing.remove();
-          const wrap = document.createElement("div");
-          wrap.id = "fallbackBox";
-          wrap.innerHTML = extra;
-          outcomePanel.insertAdjacentElement("afterend", wrap);
-        }
+  function renderOutcome(data) {
+    const closed = data?.result?.kind === "deal-closed";
+    const title = closed ? "Deal closed" : data?.matched ? `Ended: ${data?.result?.kind || "no deal"}` : "No match";
+    setStatus(closed ? "good" : "idle", title);
+
+    if (!data?.matched) {
+      dealValue.innerHTML = `<small>No matching buyer/seller terms.</small>`;
+      settlementValue.innerHTML = `<small>Nothing settled.</small>`;
+      hashValue.innerHTML = `<small>Adjust the input terms and rerun.</small>`;
+    } else {
+      const unit = data?.result?.unitPrice ?? "—";
+      const qty = data?.result?.qty ?? "—";
+      const total = data?.total != null ? Number(data.total).toFixed(6) : "—";
+      dealValue.innerHTML = `${unit} <small>/ unit</small><br><small>${qty} qty, total ${total}</small>`;
+      
+      const settlement = data?.settlement;
+      if (settlement) {
+        const txHash = settlement.txHash || "—";
+        const explorerUrl = settlement.explorerUrl || null;
+        const mode = settlement.mode || "settlement";
+        settlementValue.innerHTML = explorerUrl
+          ? `<a href="${explorerUrl}" target="_blank" rel="noreferrer">${shorten(txHash, 10)}</a><br><small>Live ${mode}</small>`
+          : `${shorten(txHash, 10)}<br><small>${mode}</small>`;
       } else {
+        settlementValue.innerHTML = `<small>Waiting for settlement callback.</small>`;
+      }
+      hashValue.innerHTML = `<code>${data?.result?.transcriptHash || "—"}</code>`;
+    }
+
+    if (!closed) {
+      const fallback = data?.fallback;
+      const extra = fallback
+        ? `<div class="kv wide" style="margin-top:12px;">
+            <div class="k">Fallback</div>
+            <div class="v">${fallback.message || "No deal closed."}<br><small>${fallback.suggestedAction || "Rerun with a wider price spread."}</small></div>
+          </div>`
+        : `<div class="kv wide" style="margin-top:12px;">
+            <div class="k">Fallback</div>
+            <div class="v"><small>No deal closed. Widen the spread or use deterministic mode.</small></div>
+          </div>`;
+      const outcomePanel = document.querySelector(".panel .grid-2");
+      if (outcomePanel) {
         const existing = document.getElementById("fallbackBox");
         if (existing) existing.remove();
+        const wrap = document.createElement("div");
+        wrap.id = "fallbackBox";
+        wrap.innerHTML = extra;
+        outcomePanel.insertAdjacentElement("afterend", wrap);
       }
-      renderLog(data?.log);
+    } else {
+      const existing = document.getElementById("fallbackBox");
+      if (existing) existing.remove();
     }
+    renderLog(data?.log);
+  }
 
-    async function refreshHealth() {
-      try {
-        const res = await fetch("/api/health");
-        const data = await res.json();
-        if (data?.ok) {
-          setStatus("idle", "Ready");
-        }
-      } catch {
-        setStatus("idle", "Offline");
+  async function refreshHealth() {
+    try {
+      const res = await fetch("/api/health");
+      const data = await res.json();
+      if (data?.ok) {
+        setStatus("idle", "Ready");
       }
+    } catch {
+      setStatus("idle", "Offline");
     }
+  }
 
     dealForm.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -721,10 +840,6 @@
           qty: Number($("qty").value) || 1,
           buyerMax: Number($("buyerMax").value),
           sellerFloor: Number($("sellerFloor").value),
-          buyerAgentId: $("buyerAgentId").value.trim() || undefined,
-          sellerAgentId: $("sellerAgentId").value.trim() || undefined,
-          buyerWallet: $("buyerWallet").value.trim() || undefined,
-          sellerWallet: $("sellerWallet").value.trim() || undefined,
           buyerTimeoutMs: Number($("timeoutMs").value) || 120000,
           sellerTimeoutMs: Number($("timeoutMs").value) || 120000,
           forceDeterministic: $("traceMode").value === "deterministic",
@@ -735,6 +850,7 @@
           body: JSON.stringify(payload),
         });
         const data = await res.json();
+        updatePipeline(data);
         renderOutcome(data);
       } catch (err) {
         setStatus("idle", "Error");
@@ -752,10 +868,14 @@
       hashValue.innerHTML = "<small>Will appear after deal close.</small>";
       const existing = document.getElementById("fallbackBox");
       if (existing) existing.remove();
+      // Reset pipeline
+      document.querySelectorAll("#pipeline .pipeline-step").forEach(s => s.classList.remove("active", "done", "error"));
+      // Reset x402 label
+      const x402Label = document.querySelector("#pipeline .pipeline-step[data-step=\"9\"] .step-label");
+      if (x402Label) x402Label.textContent = "x402 Payment";
       setStatus("idle", "Idle");
     });
 
-    bindCursor();
     refreshHealth();
   </script>
 </body>

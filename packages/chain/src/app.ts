@@ -7,6 +7,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import type { FastifyInstance } from 'fastify';
 import { registerDealsRoutes } from './deals.js';
+import { registerErc8004Routes } from './erc8004Routes.js';
 import type { SafetyPolicy } from './safety.js';
 
 export interface BuildAppOptions {
@@ -20,6 +21,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   app.get('/health', async () => ({ ok: true }));
 
   registerDealsRoutes(app, opts);
+  registerErc8004Routes(app);
 
   return app;
 }

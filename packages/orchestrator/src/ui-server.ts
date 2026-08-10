@@ -18,12 +18,17 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { startSystem, type RunningSystem } from "./start-all.js";
 import { runAgent, type AgentDeps } from "../../negotiate-brain/src/agent.js";
-import { reputation } from "../../chain/src/reputation.js";
-import { getLastSettlement } from "../../negotiate/src/settle.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const UI_PORT = Number(process.env.UI_PORT ?? 3000);
-const REG = "eip155:84532:0x8004A818BFB912233c491871b3d84c89A494BD9e";
+const REG =
+  "eip155:48816:0x54B8d8E2455946f2A5B8982283f2359812e815ce";
+
+const CHAIN = "http://localhost:3003";
+
+const AGENT_URI =
+  process.env.GOAT_AGENT_URI ??
+  "https://finality.example/agent.json";
 const buyerWalletDefault = process.env.GOAT_BUYER_WALLET ?? "0x1111111111111111111111111111111111111111";
 const sellerWalletDefault = process.env.GOAT_SELLER_WALLET ?? "0x2222222222222222222222222222222222222222";
 
@@ -40,8 +45,6 @@ interface DealRequest {
   gpu?: string;
   buyerWallet?: string;
   sellerWallet?: string;
-  buyerAgentId?: string;
-  sellerAgentId?: string;
   buyerTimeoutMs?: number;
   sellerTimeoutMs?: number;
   forceDeterministic?: boolean;
@@ -61,15 +64,36 @@ async function postJson(url: string, body: unknown): Promise<any> {
 /** Run the whole intent -> match -> negotiate -> settle -> reputation loop. */
 async function runDeal(req: DealRequest) {
   const log: string[] = [];
+
+  // Check if chain is in live mode
+  const chainModeRes = await fetch(`${CHAIN}/mode`);
+  const chainMode = chainModeRes.ok ? await chainModeRes.json() : { mode: "mock" };
+  const isLive = chainMode.mode === "live";
+
+  let buyerReg: { agentId: string; txHash?: string } = { agentId: "1" };
+  let sellerReg: { agentId: string; txHash?: string } = { agentId: "2" };
+
+  if (isLive) {
+    // Live mode: register on ERC-8004 Identity Registry
+    buyerReg = await postJson(`${CHAIN}/register`, { agentURI: `${AGENT_URI}#buyer` });
+    sellerReg = await postJson(`${CHAIN}/register`, { agentURI: `${AGENT_URI}#seller` });
+    log.push(`ERC-8004 buyer registered: #${buyerReg.agentId}`);
+    log.push(`ERC-8004 seller registered: #${sellerReg.agentId}`);
+  } else {
+    // Mock mode: use deterministic agent IDs (matches run-e2e.ts)
+    log.push(`Mock mode: using deterministic agent IDs buyer=#${buyerReg.agentId}, seller=#${sellerReg.agentId}`);
+  }
+
   const buyerIdentity = {
     agentRegistry: REG,
-    agentId: req.buyerAgentId ?? "ResearchBot",
-    wallet: req.buyerWallet ?? buyerWalletDefault ?? demoWallet("ab"),
+    agentId: String(buyerReg.agentId),
+    wallet: req.buyerWallet ?? buyerWalletDefault,
   };
+
   const sellerIdentity = {
     agentRegistry: REG,
-    agentId: req.sellerAgentId ?? "GPUVendorAlpha",
-    wallet: req.sellerWallet ?? sellerWalletDefault ?? demoWallet("cd"),
+    agentId: String(sellerReg.agentId),
+    wallet: req.sellerWallet ?? sellerWalletDefault,
   };
   const requirements = req.gpu ? { gpu: req.gpu } : {};
 
@@ -113,12 +137,45 @@ async function runDeal(req: DealRequest) {
   };
 
   const [b, s] = await Promise.all([runAgent(buyerDeps), runAgent(sellerDeps)]);
+
+  if (b.kind !== "deal-closed") {
+  return {
+    matched: true,
+    result: b,
+    sellerResult: s,
+    log,
+    fallback: {
+      kind: "no-deal",
+      message: "Negotiation did not close.",
+    },
+  };
+}
+
+const dealResult = await postJson(`${CHAIN}/deals`, {
+  roomId: match.roomId,
+  transcriptHash: b.transcriptHash,
+
+  buyer: {
+    ...buyerIdentity,
+    onchainAgentId: buyerReg.agentId,
+  },
+
+  seller: {
+    ...sellerIdentity,
+    onchainAgentId: sellerReg.agentId,
+  },
+
+  unitPrice: b.unitPrice,
+  qty: b.qty,
+  terms: b.terms,
+
+  totalUsdc:
+    (b.unitPrice ?? 0) * (b.qty ?? 0),
+});
+
+log.push(`GOAT settlement: ${dealResult.txHash}`);
   log.push(`Negotiation: buyer=${b.kind}${b.unitPrice != null ? ` @ ${b.unitPrice}` : ""}; seller=${s.kind}${s.unitPrice != null ? ` @ ${s.unitPrice}` : ""}`);
 
-  await new Promise((r) => setTimeout(r, 1200)); // let chain settle
-  const settlement = getLastSettlement(match.roomId);
-  const buyerRep = reputation.getReputation("ResearchBot");
-  const sellerRep = reputation.getReputation("GPUVendorAlpha");
   const fallback =
     b.kind === "deal-closed"
       ? null
@@ -132,9 +189,23 @@ async function runDeal(req: DealRequest) {
     matched: true,
     result: b,
     sellerResult: s,
-    settlement,
-    total: b.unitPrice != null ? b.unitPrice * (b.qty ?? 0) : null,
-    reputation: { ResearchBot: buyerRep, GPUVendorAlpha: sellerRep },
+    identity: {
+  buyer: buyerReg,
+  seller: sellerReg,
+},
+
+settlement: {
+  mode: dealResult.mode,
+  txHash: dealResult.txHash,
+  explorerUrl: dealResult.explorerUrl,
+},
+
+reputation: dealResult.reputation,
+
+total:
+  b.unitPrice != null
+    ? b.unitPrice * (b.qty ?? 0)
+    : null,
     log,
     fallback,
   };
@@ -171,8 +242,6 @@ async function main() {
             gpu: parsed.gpu || undefined,
             buyerWallet: parsed.buyerWallet || undefined,
             sellerWallet: parsed.sellerWallet || undefined,
-            buyerAgentId: parsed.buyerAgentId || undefined,
-            sellerAgentId: parsed.sellerAgentId || undefined,
             buyerTimeoutMs: parsed.buyerTimeoutMs != null ? Number(parsed.buyerTimeoutMs) : undefined,
             sellerTimeoutMs: parsed.sellerTimeoutMs != null ? Number(parsed.sellerTimeoutMs) : undefined,
             forceDeterministic: Boolean(parsed.forceDeterministic),

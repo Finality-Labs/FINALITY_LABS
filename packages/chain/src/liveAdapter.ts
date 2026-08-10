@@ -42,15 +42,36 @@ export interface LiveAdapter {
 // ERC-721 Transfer(address,address,uint256) — topic0; tokenId is topic3 (indexed).
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
+// Module-level lazy promise for the adapter
+let liveAdapterPromise: Promise<LiveAdapter> | null = null;
+
+/** Get or create the live adapter (lazy, only when CHAIN_MODE=live is ready) */
+export async function getLiveAdapter(cfg: ChainConfig): Promise<LiveAdapter | null> {
+  const { isLiveReady } = await import("./config.js");
+  const check = isLiveReady(cfg);
+  if (!check.ready) return null;
+  if (!liveAdapterPromise) {
+    liveAdapterPromise = createLiveAdapter(cfg);
+  }
+  return liveAdapterPromise;
+}
+
 export async function createLiveAdapter(cfg: ChainConfig): Promise<LiveAdapter> {
   // Dynamic imports: keep these out of the mock path entirely.
   const { ViemWalletProvider } = await import("@goatnetwork/agentkit/core");
-  const { erc8004GiveFeedbackAction, erc8004GetReputationAction, getIdentityRegistryAddress } =
-    await import("@goatnetwork/agentkit/plugins");
+  const {
+    erc8004GiveFeedbackAction,
+    erc8004GetReputationAction,
+  } = await import("@goatnetwork/agentkit/plugins");
   const { http, createPublicClient } = await import("viem");
 
   const net = GOAT_NETWORKS[cfg.network];
+  const FINALITY_IDENTITY_REGISTRY =
+    "0x54B8d8E2455946f2A5B8982283f2359812e815ce";
   const account = privateKeyToAccount(cfg.privateKey as `0x${string}`);
+  const feedbackAccount = privateKeyToAccount(
+    (cfg.feedbackPrivateKey ?? cfg.privateKey) as `0x${string}`
+  );
 
   const chain = {
     id: net.chainId,
@@ -60,25 +81,60 @@ export async function createLiveAdapter(cfg: ChainConfig): Promise<LiveAdapter> 
   } as const;
 
   const wallet = new ViemWalletProvider(account, chain as any, http(cfg.rpcUrl), cfg.network);
+  const feedbackWallet = new ViemWalletProvider(
+    feedbackAccount,
+    chain as any,
+    http(cfg.rpcUrl),
+    cfg.network
+  );
   const publicClient = createPublicClient({ chain: chain as any, transport: http(cfg.rpcUrl) });
 
   const ctx = () => ({ traceId: `finality-${Date.now()}`, network: cfg.network, now: Date.now() });
-  const giveFeedback = erc8004GiveFeedbackAction(wallet as any);
-  const getRep = erc8004GetReputationAction(wallet as any);
-  const REGISTER_ABI = ["function register(string agentURI) returns (uint256 agentId)"];
+  const giveFeedback = erc8004GiveFeedbackAction(feedbackWallet as any);
+  const getRep = erc8004GetReputationAction(feedbackWallet as any);
+
+  // Full ABI for parsing AgentRegistered event
 
   return {
     chainId: net.chainId,
     settlerAddress: account.address,
-
     async register(agentURI) {
-      const identityRegistry = getIdentityRegistryAddress(cfg.network);
-      const { txHash } = await wallet.writeContract(identityRegistry, REGISTER_ABI, "register", [agentURI]);
-      // Parse the numeric agentId (ERC-721 tokenId) from the mint Transfer event.
-      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash as `0x${string}` });
-      const mint = receipt.logs.find((l: Log) =>
-        l.topics[0] === TRANSFER_TOPIC && (l.topics as string[]).length === 4);
-      const agentId = mint?.topics[3] ? BigInt(mint.topics[3]).toString() : "";
+      const REGISTER_ABI = [
+        "function register(string agentURI) returns (uint256 agentId)",
+        "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
+      ];
+
+      const { txHash } = await wallet.writeContract(
+        FINALITY_IDENTITY_REGISTRY,
+        REGISTER_ABI,
+        "register",
+        [agentURI],
+      );
+
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: txHash as `0x${string}`,
+      });
+
+      let agentId = "";
+
+      const mint = receipt.logs.find(
+        (l: Log) =>
+          l.address.toLowerCase() ===
+          FINALITY_IDENTITY_REGISTRY.toLowerCase() &&
+          l.topics[0] === TRANSFER_TOPIC &&
+          l.topics.length === 4,
+      );
+
+      if (mint?.topics[3]) {
+        agentId = BigInt(mint.topics[3]).toString();
+      }
+
+      if (!agentId) {
+        throw new Error(
+          `Registration succeeded but agentId could not be extracted. tx=${txHash}`,
+        );
+      }
+
       return { txHash, agentId };
     },
 
@@ -106,7 +162,12 @@ export async function createLiveAdapter(cfg: ChainConfig): Promise<LiveAdapter> 
     },
 
     async getReputation(agentId) {
-      const out = await getRep.execute(ctx(), { agentId, clientAddresses: [], tag1: "", tag2: "" });
+      const out = await getRep.execute(ctx(), {
+        agentId,
+        clientAddresses: [feedbackAccount.address],
+        tag1: "",
+        tag2: "",
+      });
       return {
         count: Number(out.count),
         summaryValue: Number(out.summaryValue),

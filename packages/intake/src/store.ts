@@ -91,8 +91,15 @@ export function matches(intent: Intent, offer: Offer): boolean {
   if (intent.unit !== offer.unit) return false;
   if (offer.unitPrice > intent.maxUnitPrice) return false;
   for (const [k, v] of Object.entries(intent.requirements || {})) {
-    if (!(k in (offer.requirements || {}))) return false;
-    if ((offer.requirements as Record<string, unknown>)[k] !== v) return false;
+  const offerValue = (offer.requirements as Record<string, unknown>)[k];
+
+  if (offerValue === undefined) {
+    return false;
   }
+
+  if (JSON.stringify(offerValue) !== JSON.stringify(v)) {
+    return false;
+  }
+}
   return true;
 }

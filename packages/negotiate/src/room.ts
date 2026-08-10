@@ -349,12 +349,12 @@ export class Room {
   }
 
   // Terminal: emit the system frame, close the room, resolve any waiters.
-  private terminate(env: SystemEnvelope): void {
+  private async terminate(env: SystemEnvelope): Promise<void> {
     if (this.status === "closed") return;
     this.status = "closed";
     this.broadcast(env);
     if (env.type === "system" && env.kind === "deal-closed" && this.result) {
-      this.onDeal?.(this.result);
+      await this.onDeal?.(this.result);
     }
   }
 

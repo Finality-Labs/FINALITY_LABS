@@ -1,0 +1,80 @@
+const WS_URL = process.env.WS_URL ?? "ws://localhost:3002";
+export class Matchmaker {
+    store;
+    constructor(store) {
+        this.store = store;
+    }
+    // Called after an intent is added. If a compatible offer exists, open a room.
+    // onIntent(intentId: string): { matched: boolean; roomId?: string; wssUrl?: string } {
+    //   const intent = this.store.getIntent(intentId);
+    //   if (!intent) return { matched: false };
+    //   const hit = this.store.findMatchForIntent(intent);
+    //   if (!hit) return { matched: false };
+    //   const room = this.store.createRoom(intentId, hit.offerId);
+    //   return { matched: true, roomId: room.roomId, wssUrl: `${WS_URL}/negotiate/${room.roomId}` };
+    // }
+    onIntent(intentId) {
+        console.log("=== onIntent called ===");
+        console.log("Intent ID:", intentId);
+        const intent = this.store.getIntent(intentId);
+        console.log("Intent:", intent);
+        if (!intent) {
+            console.log("❌ Intent not found");
+            return { matched: false };
+        }
+        console.log("Searching for matching offer...");
+        const hit = this.store.findMatchForIntent(intent);
+        console.log("Match result:", hit);
+        if (!hit) {
+            console.log("❌ No matching offer");
+            return { matched: false };
+        }
+        const room = this.store.createRoom(intentId, hit.offerId);
+        console.log("✅ Room created:", room.roomId);
+        return {
+            matched: true,
+            roomId: room.roomId,
+            wssUrl: `${WS_URL}/negotiate/${room.roomId}`,
+        };
+    }
+    // Called after an offer is added. If a compatible intent exists, open a room.
+    // onOffer(offerId: string): { matched: boolean; roomId?: string; wssUrl?: string } {
+    //   const offer = this.store.getOffer(offerId);
+    //   if (!offer) return { matched: false };
+    //   const hit = this.store.findMatchForOffer(offer);
+    //   if (!hit) return { matched: false };
+    //   const room = this.store.createRoom(hit.intentId, offerId);
+    //   return { matched: true, roomId: room.roomId, wssUrl: `${WS_URL}/negotiate/${room.roomId}` };
+    // }
+    onOffer(offerId) {
+        console.log("=== onOffer called ===");
+        console.log("Offer ID:", offerId);
+        const offer = this.store.getOffer(offerId);
+        console.log("Offer:", offer);
+        if (!offer) {
+            console.log("❌ Offer not found");
+            return { matched: false };
+        }
+        console.log("Searching for matching intent...");
+        const hit = this.store.findMatchForOffer(offer);
+        console.log("Match result:", hit);
+        if (!hit) {
+            console.log("❌ No matching intent");
+            return { matched: false };
+        }
+        const room = this.store.createRoom(hit.intentId, offerId);
+        console.log("✅ Room created:", room.roomId);
+        return {
+            matched: true,
+            roomId: room.roomId,
+            wssUrl: `${WS_URL}/negotiate/${room.roomId}`,
+        };
+    }
+    // Lookup an existing match for an intent or offer id.
+    lookup(id) {
+        const room = this.store.findRoomByIntent(id) ?? this.store.findRoomByOffer(id);
+        if (!room)
+            return { matched: false };
+        return { matched: true, roomId: room.roomId, wssUrl: `${WS_URL}/negotiate/${room.roomId}` };
+    }
+}

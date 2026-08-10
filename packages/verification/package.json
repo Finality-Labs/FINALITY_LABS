@@ -1,0 +1,32 @@
+{
+  "name": "@finality/verification",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./types": "./dist/types.js",
+    "./manager": "./dist/manager.js",
+    "./providers/base": "./dist/providers/base.js",
+    "./providers/verifiers": "./dist/providers/verifiers.js"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^3.23.0",
+    "viem": "^2.9.0",
+    "@finality/chain": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "tsx": "^4.16.2",
+    "@types/node": "^20.14.0",
+    "vitest": "^1.6.0"
+  }
+}

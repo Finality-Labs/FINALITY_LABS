@@ -10,7 +10,13 @@
     "forceConsistentCasingInFileNames": true,
     "outDir": "dist",
     "rootDir": "src",
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@finality/verification": ["../verification/dist/index.d.ts"],
+      "@finality/verification/*": ["../verification/dist/*"],
+      "@finality/chain/*": ["../chain/src/*"]
+    }
   },
   "include": ["src"]
 }

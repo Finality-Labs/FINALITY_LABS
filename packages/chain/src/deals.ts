@@ -18,10 +18,14 @@ import { buildPayment, facilitator } from './mockFacilitator.js';
 import { ReputationProvider, type ReputationResult } from './reputationProvider.js';
 import { loadChainConfig, isLiveReady, explorerBase } from './config.js';
 import type { LiveAdapter } from './liveAdapter.js';
+import { X402Adapter, type X402SettlementResult } from './x402Adapter.js';
+import { isX402Ready } from './x402Config.js';
 
 // Live adapter is lazily created once, only when CHAIN_MODE=live is ready.
 let liveAdapterPromise: Promise<LiveAdapter> | null = null;
-async function getLiveAdapter(): Promise<LiveAdapter | null> {
+// X402 adapter is lazily created once, only when x402 configuration is ready.
+let x402AdapterPromise: Promise<X402Adapter> | null = null;
+export async function getLiveAdapter(): Promise<LiveAdapter | null> {
   const cfg = loadChainConfig();
   const check = isLiveReady(cfg);
   if (!check.ready) return null;
@@ -30,6 +34,15 @@ async function getLiveAdapter(): Promise<LiveAdapter | null> {
     liveAdapterPromise = createLiveAdapter(cfg);
   }
   return liveAdapterPromise;
+}
+
+export async function getX402Adapter(): Promise<X402Adapter | null> {
+  const check = isX402Ready();
+  if (!check.ready) return null;
+  if (!x402AdapterPromise) {
+    x402AdapterPromise = Promise.resolve(new X402Adapter());
+  }
+  return x402AdapterPromise;
 }
 
 const partySchema = z.object({
@@ -69,7 +82,7 @@ export const DEFAULT_POLICY: SafetyPolicy = {
 
 export interface DealResponse {
   ok: boolean;
-  mode: 'mock' | 'live';
+  mode: 'mock' | 'live' | 'x402';
   txHash: string;
   explorerUrl?: string;
   reputation: {
@@ -101,7 +114,73 @@ export async function handleDeal(
     });
   }
 
-  // 3-5: settle + record reputation. Try LIVE (on-chain) when configured and
+  // 3. Try x402 settlement first (primary settlement path when configured)
+  const x402 = await getX402Adapter();
+
+  if (x402) {
+    // ── x402 settlement via GOAT Flow (EIP-3009 off-chain signature → on-chain settle) ──
+    try {
+      const x402Result = await x402.settle(deal);
+      
+      // If payment requires buyer signature, return early for buyer to sign
+      if (x402Result.requiresSignature) {
+        return {
+          ok: true,
+          mode: 'x402',
+          txHash: '',
+          explorerUrl: x402Result.explorerUrl,
+          reputation: { 
+            buyer: { agentId: deal.buyer.agentId, count: 0, summaryValue: 0, summaryValueDecimals: 0, mode: "offchain" as const },
+            seller: { agentId: deal.seller.agentId, count: 0, summaryValue: 0, summaryValueDecimals: 0, mode: "offchain" as const },
+          },
+        };
+      }
+
+      const proof = {
+        fromAddress: deal.buyer.wallet,
+        toAddress: deal.seller.wallet,
+        chainId: x402.getConfig().chainId,
+        txHash: x402Result.txHash,
+      };
+
+      // Get live adapter for reputation (may be null)
+      const live = await getLiveAdapter();
+      const repProvider = new ReputationProvider(live);
+
+      // Record reputation for both parties
+      const buyerAgent = { agentId: deal.buyer.agentId, count: 0, summaryValue: 0, summaryValueDecimals: 0, mode: "offchain" as const };
+      const sellerAgent = { agentId: deal.seller.agentId, count: 0, summaryValue: 0, summaryValueDecimals: 0, mode: "offchain" as const };
+      
+      try {
+        if (deal.buyer.onchainAgentId) {
+          const r = await repProvider.giveFeedback({
+            agentId: deal.buyer.onchainAgentId, value: 1, decimals: 0,
+            tag1: 'deal', tag2: 'paid', endpoint: '/deals', feedbackHash: deal.transcriptHash, proofOfPayment: proof,
+          });
+          Object.assign(buyerAgent, r);
+        }
+        if (deal.seller.onchainAgentId) {
+          const r = await repProvider.giveFeedback({
+            agentId: deal.seller.onchainAgentId, value: 1, decimals: 0,
+            tag1: 'deal', tag2: 'fulfilled', endpoint: '/deals', feedbackHash: deal.transcriptHash, proofOfPayment: proof,
+          });
+          Object.assign(sellerAgent, r);
+        }
+      } catch (e) {
+        console.error('[chain] x402 reputation write failed (settlement stands):', (e as Error).message);
+      }
+
+      return {
+        ok: true, mode: 'x402', txHash: x402Result.txHash, explorerUrl: x402Result.explorerUrl,
+        reputation: { buyer: buyerAgent, seller: sellerAgent },
+      };
+    } catch (e) {
+      console.error('[chain] x402 settlement failed, falling back to live/mock:', (e as Error).message);
+      // Fall through to live/mock paths
+    }
+  }
+
+  // 4-5: settle + record reputation. Try LIVE (on-chain) when configured and
   // ready; otherwise fall back to the MOCK facilitator + in-memory reputation.
   const live = await getLiveAdapter();
   const repProvider = new ReputationProvider(live);
@@ -256,15 +335,27 @@ export function registerDealsRoutes(
     }
   });
 
-  // GET /mode — report whether the chain service is settling live or mock.
+  // GET /mode — report whether the chain service is settling live, x402, or mock.
   app.get('/mode', async () => {
     const cfg = loadChainConfig();
-    const check = isLiveReady(cfg);
+    const liveCheck = isLiveReady(cfg);
+    const x402Check = isX402Ready();
+    let mode: 'live' | 'x402' | 'mock';
+    let liveReady = liveCheck.ready;
+    let x402Ready = x402Check.ready;
+    if (liveCheck.ready) {
+      mode = 'live';
+    } else if (x402Check.ready) {
+      mode = 'x402';
+    } else {
+      mode = 'mock';
+    }
     return {
-      mode: check.ready ? 'live' : 'mock',
+      mode,
       network: cfg.network,
-      liveReady: check.ready,
-      reason: check.ready ? undefined : check.reason,
+      liveReady,
+      x402Ready,
+      reason: liveCheck.reason ?? x402Check.reason,
     };
   });
 }
