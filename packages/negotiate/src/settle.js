@@ -1,4 +1,4 @@
-import { VerificationManager } from "@finality/verification";
+import { VerificationManager, SellerCompletionVerifier, BuyerApprovalVerifier, AdminVerifier, } from "@finality/verification";
 // Best-effort delivery of a closed deal to Part 3 (contract §5).
 // POST { roomId, transcriptHash, buyer, seller, unitPrice, qty, terms, totalUsdc }
 // If Part 3 is not running, log + continue (never crash).
@@ -7,8 +7,25 @@ import { VerificationManager } from "@finality/verification";
 // Pipeline: deal-closed → Verification → Settlement
 // - If Verification returns "verified" → proceed to settlement
 // - If Verification returns "rejected" or "error" → block settlement, mark deal as rejected/failed/disputed
+//
+// Approval workflow (seller completion + buyer approval) is STATEFUL: the
+// seller/buyer verifiers keep per-request state keyed by requestId, so the
+// request ID is STABLE per room (`req_${roomId}`). When a completion / decision
+// is submitted via the HTTP action endpoints we RE-RUN the same verification
+// request and only settle once it actually passes — a rejected/pending deal is
+// never settled, and a passed deal is settled exactly once.
 const DEALS_URL_DEFAULT = "http://localhost:3003/deals";
 const lastSettlementByRoom = new Map();
+// Retained per-room verification request + raw result so a later action
+// submission (seller completion / buyer approval / admin override) can
+// RE-VERIFY the exact same request (the action verifiers are stateful and
+// keyed by requestId) and drive the deal to settlement once it passes.
+const lastRequestByRoom = new Map();
+const lastResultByRoom = new Map();
+// Rooms whose deal has already been pushed to settlement — guards against
+// double settlement when multiple action submissions all flip verification
+// to "passed" (e.g. seller completion and buyer approval arriving together).
+const settledRooms = new Set();
 // Default verification manager instance (lazy init)
 let verificationManager = null;
 let verificationManagerPromise = null;
@@ -20,10 +37,40 @@ async function getVerificationManager() {
     return verificationManager;
 }
 /**
- * Create a verification request from a deal result
+ * Create a verification request from a deal result.
+ *
+ * The request ID is STABLE per room (`req_${roomId}`) and the resource type
+ * recorded on the deal is passed as verification context so the TermsVerifier
+ * validates the closed deal against its real resource (e.g. "gpu") instead of
+ * the default "unknown".
  */
 function createVerificationRequest(result) {
-    return VerificationManager.createRequestFromDeal(result, {});
+    return VerificationManager.createRequestFromDeal(result, { resource: result.deal.resource }, `req_${result.roomId}`);
+}
+function mapVerdicts(verdicts) {
+    return verdicts.map((v) => ({
+        verdictId: v.verdictId,
+        verifierId: v.verifierId,
+        verifierName: v.verifierName,
+        status: v.status,
+        proof: v.proof,
+        rejectionReason: v.rejectionReason,
+        timestamp: v.timestamp,
+        metadata: v.metadata,
+    }));
+}
+function buildReason(result) {
+    return result.verdicts
+        .filter((v) => v.status === "rejected" || v.status === "error")
+        .map((v) => v.rejectionReason ?? `Verifier ${v.verifierName} returned ${v.status}`)
+        .join("; ");
+}
+function toDealResult(request) {
+    return {
+        roomId: request.roomId,
+        transcriptHash: request.transcriptHash,
+        deal: request.deal,
+    };
 }
 /**
  * Notify Part 3 (Settlement) of a verified deal
@@ -39,6 +86,7 @@ async function notifySettlement(result) {
         qty: result.deal.qty,
         terms: result.deal.terms,
         totalUsdc: result.deal.totalUsdc,
+        ...(result.deal.resource ? { resource: result.deal.resource } : {}),
     };
     try {
         const res = await fetch(DEALS_URL, {
@@ -48,86 +96,204 @@ async function notifySettlement(result) {
         });
         const text = await res.text();
         const parsed = text ? JSON.parse(text) : undefined;
-        const record = {
-            roomId: result.roomId,
-            response: { ok: res.ok, status: res.status, body: parsed },
-            recordedAt: new Date().toISOString(),
-        };
         if (!res.ok) {
             console.warn(`[settle] Part 3 returned ${res.status} for ${result.roomId}; continuing`);
         }
         else {
             console.log(`[settle] notified Part 3 of deal ${result.roomId} (${result.transcriptHash})`);
         }
-        return record;
+        return { ok: res.ok, status: res.status, body: parsed };
     }
     catch (err) {
         console.error(`[settle] Fetch error for ${DEALS_URL}: ${String(err)}`);
-        const record = {
-            roomId: result.roomId,
-            response: { ok: false, status: 0, error: String(err) },
-            recordedAt: new Date().toISOString(),
-        };
         console.warn(`[settle] Part 3 unreachable at ${DEALS_URL} (${String(err)}); continuing`);
-        return record;
+        return { ok: false, status: 0, error: String(err) };
     }
+}
+/**
+ * Push the deal to settlement exactly once (no-op if already settled).
+ */
+async function settleOnce(roomId, result, record) {
+    if (settledRooms.has(roomId))
+        return;
+    settledRooms.add(roomId);
+    console.log(`[verify] Verification passed, proceeding to settlement for ${roomId}`);
+    record.response = await notifySettlement(result);
+    record.settlementBlocked = false;
+    record.settlementBlockReason = undefined;
+}
+/**
+ * Apply the latest verification result to a record (shared by the initial
+ * deal-close run and every action-triggered re-run).
+ */
+function applyVerificationResult(record, request, result) {
+    record.verification = {
+        requestId: request.requestId,
+        status: result.finalStatus,
+        passed: result.passed,
+        finalStatus: result.finalStatus,
+        startedAt: result.startedAt,
+        completedAt: result.completedAt,
+        verdicts: mapVerdicts(result.verdicts),
+    };
+}
+function getOrCreateRecord(roomId, request) {
+    const existing = lastSettlementByRoom.get(roomId);
+    if (existing)
+        return existing;
+    return {
+        roomId,
+        response: { ok: false, status: 0, error: "pending" },
+        recordedAt: new Date().toISOString(),
+        deal: request.deal,
+        transcriptHash: request.transcriptHash,
+    };
 }
 /**
  * Main entry point - called when a deal closes in the negotiation room.
  * Runs verification first, then settlement only if verification passes.
+ * Deal-close verification that only lacks the approval-workflow actions
+ * (seller completion / buyer approval) is stored as blocked-but-actionable;
+ * the action endpoints re-verify and settle when those arrive.
  */
 export async function notifyDeal(result) {
     console.log(`[verify] Starting verification for deal ${result.roomId}...`);
-    // Step 1: Create verification request
+    // Step 1: Create verification request (stable ID + resource context)
     const verificationRequest = createVerificationRequest(result);
+    lastRequestByRoom.set(result.roomId, verificationRequest);
     // Step 2: Run verification through the Verification Manager
     const vm = await getVerificationManager();
     const verificationResult = await vm.verify(verificationRequest);
+    lastResultByRoom.set(result.roomId, verificationResult);
     console.log(`[verify] Verification completed for ${result.roomId}: ${verificationResult.finalStatus} (passed: ${verificationResult.passed})`);
     // Step 3: Build the base settlement record with verification info
-    const settlementRecord = {
-        roomId: result.roomId,
-        response: { ok: false, status: 0, error: "pending" },
-        recordedAt: new Date().toISOString(),
-        verification: {
-            status: verificationResult.finalStatus,
-            passed: verificationResult.passed,
-            verdicts: verificationResult.verdicts.map((v) => ({
-                verifierId: v.verifierId,
-                verifierName: v.verifierName,
-                status: v.status,
-                rejectionReason: v.rejectionReason,
-            })),
-        },
-    };
+    const settlementRecord = getOrCreateRecord(result.roomId, verificationRequest);
+    applyVerificationResult(settlementRecord, verificationRequest, verificationResult);
     // Step 4: If verification passed, proceed to settlement
     if (verificationResult.passed && verificationResult.finalStatus === "verified") {
-        console.log(`[verify] Verification passed, proceeding to settlement for ${result.roomId}`);
-        const settlementResult = await notifySettlement(result);
-        settlementRecord.response = settlementResult.response;
-        settlementRecord.settlementBlocked = false;
+        await settleOnce(result.roomId, result, settlementRecord);
     }
     else {
-        // Step 5: Verification failed - block settlement
-        const reason = verificationResult.verdicts
-            .filter((v) => v.status === "rejected" || v.status === "error")
-            .map((v) => v.rejectionReason ?? `Verifier ${v.verifierName} returned ${v.status}`)
-            .join("; ");
-        console.warn(`[verify] Verification failed for ${result.roomId}: ${reason}. Settlement blocked.`);
+        // Step 5: Verification failed - block settlement (still actionable when
+        // the failure is only missing seller completion / buyer approval).
+        const reason = buildReason(verificationResult);
+        console.warn(`[verify] Verification incomplete for ${result.roomId}: ${reason}. Settlement blocked until the required actions are submitted.`);
         settlementRecord.settlementBlocked = true;
         settlementRecord.settlementBlockReason = reason;
-        settlementRecord.response = { ok: false, status: 422, error: `Verification failed: ${reason}` };
+        settlementRecord.response = { ok: false, status: 422, error: `Verification incomplete: ${reason}` };
     }
     // Step 6: Store the settlement record
     lastSettlementByRoom.set(result.roomId, settlementRecord);
-    // Also call the original onDeal callback if it was registered (for backward compatibility)
-    // This is handled by the Room class calling onDeal directly
 }
+// ── Approval-workflow actions ────────────────────────────────────────────────
+// These register the seller/buyer/admin action with the stateful action
+// verifiers (keyed by the stable requestId) and RE-RUN verification. When the
+// re-run passes, the deal is pushed to settlement (exactly once).
+function resolveRequest(requestId) {
+    const roomId = requestId.startsWith("req_") ? requestId.slice(4) : requestId;
+    const request = lastRequestByRoom.get(roomId);
+    if (!request)
+        return undefined;
+    return { roomId, request };
+}
+async function reverifyAndRecord(requestId, roomId, request) {
+    const vm = await getVerificationManager();
+    const result = await vm.verify(request);
+    lastResultByRoom.set(roomId, result);
+    const record = getOrCreateRecord(roomId, request);
+    applyVerificationResult(record, request, result);
+    if (result.passed && result.finalStatus === "verified") {
+        await settleOnce(roomId, toDealResult(request), record);
+    }
+    else {
+        const reason = buildReason(result);
+        record.settlementBlocked = true;
+        record.settlementBlockReason = reason;
+        record.response = { ok: false, status: 422, error: `Verification incomplete: ${reason}` };
+    }
+    lastSettlementByRoom.set(roomId, record);
+    return { record, result };
+}
+/**
+ * Register the seller's completion proof and re-verify. The seller's agentId
+ * is validated by the verifier against the deal's seller on the next run.
+ */
+export async function submitSellerCompletion(requestId, sellerAgentId, proof, notes) {
+    const found = resolveRequest(requestId);
+    if (!found)
+        throw new Error(`no verification request for ${requestId}`);
+    const { roomId, request } = found;
+    SellerCompletionVerifier.submitCompletion(requestId, sellerAgentId, proof, notes);
+    const { record } = await reverifyAndRecord(requestId, roomId, request);
+    console.log(`[verify] ${roomId}: seller completion registered → ${record.verification?.finalStatus}`);
+    return record;
+}
+/**
+ * Register the buyer's approve/reject decision and re-verify. The buyer's
+ * agentId is validated by the verifier against the deal's buyer.
+ */
+export async function submitBuyerDecision(requestId, buyerAgentId, decision, rejectionReason, notes) {
+    const found = resolveRequest(requestId);
+    if (!found)
+        throw new Error(`no verification request for ${requestId}`);
+    const { roomId, request } = found;
+    BuyerApprovalVerifier.submitDecision(requestId, buyerAgentId, decision, rejectionReason, notes);
+    const { record } = await reverifyAndRecord(requestId, roomId, request);
+    console.log(`[verify] ${roomId}: buyer ${decision} registered → ${record.verification?.finalStatus}`);
+    return record;
+}
+/**
+ * Register an admin override and re-verify. Note: the admin verifier is
+ * disabled in the default manager config, so with the default config this
+ * registers state without changing the aggregate outcome.
+ */
+export async function submitAdminOverride(requestId, adminAgentId, decision, rejectionReason, notes) {
+    const found = resolveRequest(requestId);
+    if (!found)
+        throw new Error(`no verification request for ${requestId}`);
+    const { roomId, request } = found;
+    AdminVerifier.applyOverride(requestId, adminAgentId, decision, rejectionReason, notes);
+    const { record } = await reverifyAndRecord(requestId, roomId, request);
+    console.log(`[verify] ${roomId}: admin override (${decision}) registered → ${record.verification?.finalStatus}`);
+    return record;
+}
+// ── Read / dashboard views ──────────────────────────────────────────────────
 export function getLastSettlement(roomId) {
     return lastSettlementByRoom.get(roomId);
 }
 export function getRecentSettlements() {
     return [...lastSettlementByRoom.values()].sort((a, b) => a.recordedAt.localeCompare(b.recordedAt));
+}
+export async function getVerificationDashboardView(requestId) {
+    const found = resolveRequest(requestId);
+    if (!found)
+        return undefined;
+    const result = lastResultByRoom.get(found.roomId);
+    if (!result)
+        return undefined;
+    const vm = await getVerificationManager();
+    return vm.getDashboardView(found.request, result.verdicts);
+}
+export async function getVerificationDashboardViews(opts = {}) {
+    const vm = await getVerificationManager();
+    let views = [];
+    for (const [roomId, request] of lastRequestByRoom) {
+        const result = lastResultByRoom.get(roomId);
+        if (!result)
+            continue;
+        views.push(vm.getDashboardView(request, result.verdicts));
+    }
+    views.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    if (opts.status)
+        views = views.filter((v) => v.currentStatus === opts.status);
+    if (opts.agentId) {
+        views = views.filter((v) => v.deal.buyer.agentId === opts.agentId || v.deal.seller.agentId === opts.agentId);
+    }
+    const page = opts.page ?? 1;
+    const pageSize = opts.pageSize ?? 20;
+    const total = views.length;
+    const start = (page - 1) * pageSize;
+    return { verifications: views.slice(start, start + pageSize), total, page, pageSize };
 }
 /**
  * Reset the verification manager (useful for testing)

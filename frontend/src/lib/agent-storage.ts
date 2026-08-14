@@ -9,10 +9,15 @@ import {
   STORAGE_KEY,
   DEFAULT_AGENT_MODE_CONFIG,
   AgentModeConfig,
+  AgentNetwork,
+  AgentRegistrationMetadata,
+  AgentService,
   validateStoredIdentity,
   isIdentityValid,
+  createIdentityFromRegistration,
   GOAT_TESTNET3_NETWORK,
 } from '@/types/agent-identity';
+import type { Erc8004DiscoveredAgent } from '@/types/api';
 
 // Re-export AgentModeConfig for consumers
 export type { AgentModeConfig } from '@/types/agent-identity';
@@ -250,6 +255,88 @@ export function getAgentIdentityForForm(
 export function hasRegisteredAgent(wallet: string): boolean {
   const identity = getPrimaryIdentity(wallet);
   return identity !== null && identity.status === 'registered';
+}
+
+// ============================================
+// On-chain Discovery Persistence
+// ============================================
+
+/** Build stored metadata for an agent discovered on-chain (best effort). */
+function buildDiscoveredMetadata(agent: Erc8004DiscoveredAgent): AgentRegistrationMetadata {
+  const meta = agent.metadata ?? {};
+  const services: AgentService[] = (Array.isArray(meta.services) ? meta.services : [])
+    .filter(
+      (s): s is Record<string, unknown> & { name: string; endpoint: string } =>
+        !!s && typeof s.name === 'string' && typeof s.endpoint === 'string'
+    )
+    .map(s => ({
+      name: s.name,
+      endpoint: s.endpoint,
+      version: typeof s.version === 'string' ? s.version : undefined,
+      skills: Array.isArray(s.skills) ? (s.skills as string[]) : undefined,
+      domains: Array.isArray(s.domains) ? (s.domains as string[]) : undefined,
+    }));
+  const supportedTrust = (Array.isArray(meta.supportedTrust) ? meta.supportedTrust : ['reputation']).filter(
+    (t): t is 'reputation' | 'crypto-economic' | 'tee-attestation' =>
+      t === 'reputation' || t === 'crypto-economic' || t === 'tee-attestation'
+  );
+  return {
+    name: meta.name || `Agent ${agent.agentId}`,
+    description: meta.description || 'ERC-8004 agent registered on GOAT Testnet3',
+    image: meta.image || undefined,
+    services,
+    x402Support: meta.x402Support ?? false,
+    active: meta.active ?? true,
+    supportedTrust: supportedTrust.length > 0 ? supportedTrust : ['reputation'],
+    agentURI: agent.agentURI,
+  };
+}
+
+/**
+ * Persist ERC-8004 agents discovered on-chain for a wallet as registered
+ * identities. Reuses createIdentityFromRegistration + saveIdentity so the
+ * resulting records are identical to ones saved right after a registration.
+ * Only valid records are persisted; invalid/corrupt entries are skipped.
+ */
+export function saveDiscoveredAgents(
+  wallet: string,
+  discovered: Erc8004DiscoveredAgent[],
+  network: AgentNetwork = GOAT_TESTNET3_NETWORK
+): StoredAgentIdentity[] {
+  if (typeof window === 'undefined') return [];
+
+  const saved: StoredAgentIdentity[] = [];
+  const now = Date.now();
+  const total = discovered.length;
+
+  for (let i = 0; i < total; i++) {
+    const agent = discovered[i];
+    if (!agent.agentId || !agent.txHash || !agent.agentURI) continue;
+
+    const identity = createIdentityFromRegistration(
+      wallet,
+      {
+        agentId: agent.agentId,
+        txHash: agent.txHash,
+        agentURI: agent.agentURI,
+        mode: 'live',
+      },
+      buildDiscoveredMetadata(agent),
+      network
+    );
+
+    // Never let a malformed record block discovery.
+    if (!validateStoredIdentity(identity)) continue;
+
+    // Deterministic primary selection: the newest agent (returned first by the
+    // discovery endpoint) must win getPrimaryIdentity's registeredAt sort even
+    // though every identity is persisted in the same session.
+    identity.registeredAt = new Date(now + (total - 1 - i) * 1000).toISOString();
+
+    saveIdentity(identity);
+    saved.push(identity);
+  }
+  return saved;
 }
 
 /** Get display name for an agent identity */

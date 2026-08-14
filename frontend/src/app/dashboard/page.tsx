@@ -11,7 +11,6 @@ import {
   TrendingDown,
   DollarSign,
   Handshake,
-  Activity,
   ArrowUpRight,
   ArrowDownRight,
   Users,
@@ -19,6 +18,13 @@ import {
   BarChart3,
   PlusCircle,
   RefreshCw,
+  Wallet,
+  AlertCircle,
+  CheckCircle,
+  ExternalLink,
+  Activity,
+  Bot,
+  Network,
 } from 'lucide-react';
 import { useHealthCheck, useBackendConnectivity } from '@/lib/queries';
 import {
@@ -36,6 +42,8 @@ import { PageContainer, Section } from '@/components/layout';
 import { formatCurrency, formatRelativeTime, truncate, cn } from '@/lib/utils';
 import { StatCardSkeleton, NegotiationTableSkeleton, DashboardSkeleton } from '@/components/ui/loading-states';
 import Link from "next/link";
+import { useWallet, useCurrentAgent, useHasRegisteredAgent } from '@/hooks/use-wallet';
+import { useAgentIdentity, useAgentMode } from '@/context/agent-identity';
 // ============================================
 // Stats Card
 // ============================================
@@ -287,14 +295,14 @@ const ActiveDeals = ({ deals = [], loading = false }: { deals?: ActiveDeal[]; lo
 const QuickActions = () => {
   const actions = [
     {
-      title: 'Create Buyer Intent',
+      title: 'BUYER — Create Intent',
       description: 'Post a new buy intent for GPU compute',
       icon: <TrendingUp className="h-5 w-5" />,
       href: '/create?type=intent',
       color: 'bg-[#3fb950]/10 text-[#3fb950]',
     },
     {
-      title: 'Create Seller Offer',
+      title: 'SELLER — Create Offer',
       description: 'List your GPU resources for sale',
       icon: <TrendingDown className="h-5 w-5" />,
       href: '/create?type=offer',
@@ -488,12 +496,101 @@ const RecentActivity = ({ activities = [], loading = false }: { activities?: Act
 };
 
 // ============================================
+// Agent Identity
+// ============================================
+
+const AgentIdentityCard = () => {
+  const { account: wallet, isConnected } = useWallet();
+  const { primaryIdentity, hasAgent, network } = useAgentIdentity();
+  const { useErc8004Agents } = useAgentMode();
+  const currentAgent = useCurrentAgent('buyer');
+
+  const isLive = useErc8004Agents && hasAgent && primaryIdentity?.status === 'registered';
+  const identity = isLive ? primaryIdentity : null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Agent Identity</CardTitle>
+        <CardDescription>Your active agent identity used for buying and selling</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-wrap items-center gap-4 mb-4">
+          <div className="p-3 rounded-lg bg-black text-white">
+            <Bot className="h-6 w-6" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="font-medium text-black truncate">
+              {identity ? identity.metadata.name : 'Local Mock Agent'}
+            </p>
+            <div className="flex flex-wrap items-center gap-2 mt-1">
+              <Badge variant={isLive ? 'success' : 'default'}>
+                {isLive ? 'LIVE' : 'LOCAL'}
+              </Badge>
+              <span className="flex items-center gap-1 text-xs text-[#5d5d5d] font-mono">
+                <Network className="h-3 w-3" />
+                {identity ? identity.network.network : network.network}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-wider text-[#5d5d5d] mb-1">ERC-8004 Agent ID</p>
+            <p className="font-mono text-black break-all">
+              {identity ? identity.agentId : currentAgent?.agentId || '—'}
+            </p>
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-wider text-[#5d5d5d] mb-1">Wallet Address</p>
+            <p className="font-mono text-black break-all">
+              {identity ? identity.wallet : wallet || '—'}
+            </p>
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-wider text-[#5d5d5d] mb-1">Mode</p>
+            <p className="text-black capitalize">
+              {isLive ? 'LIVE (ERC-8004)' : 'LOCAL'}
+            </p>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+// ============================================
 // Dashboard Page
 // ============================================
 
 export default function DashboardPage() {
   const { data: healthData, isLoading: healthLoading, refetch: refetchHealth } = useHealthCheck();
   const { isConnected, chainMode, isLoading: connectivityLoading, isError, refetch: refetchConnectivity } = useBackendConnectivity();
+  
+  // Wallet & Identity
+  const { account: wallet, isConnected: isWalletConnected, isConnecting, connect, chainId } = useWallet();
+  const { primaryIdentity, hasAgent, config: agentConfig } = useAgentIdentity();
+const { useErc8004Agents, setMode } = useAgentMode();
+  const { hasAgent: hasRegisteredAgent } = useHasRegisteredAgent();
+
+  // Check if identity is ready (wallet connected + ERC-8004 agent registered if using ERC-8004 mode)
+  const [identityReady, setIdentityReady] = React.useState(false);
+  
+  React.useEffect(() => {
+    if (!isWalletConnected) {
+      setIdentityReady(false);
+      return;
+    }
+    
+    if (useErc8004Agents) {
+      // ERC-8004 mode: need registered agent
+      setIdentityReady(hasAgent && primaryIdentity?.status === 'registered');
+    } else {
+      // Local mode: always ready with mock agents
+      setIdentityReady(true);
+    }
+  }, [isWalletConnected, useErc8004Agents, hasAgent, primaryIdentity]);
 
   // Fetch dashboard stats from health/chain data or use defaults
   const stats = React.useMemo(() => {
@@ -610,6 +707,9 @@ export default function DashboardPage() {
           </div>
         )}
       </div>
+
+      {/* Agent Identity */}
+      <AgentIdentityCard />
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-2">

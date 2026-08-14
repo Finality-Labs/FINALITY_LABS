@@ -7,8 +7,8 @@
     "build": "echo 'orchestrator: no build needed (tsx runtime)'",
     "e2e": "tsx src/run-e2e.ts",
     "test": "tsx src/run-e2e.ts",
-    "start": "tsx src/start-all.ts",
-    "ui": "tsx src/ui-server.ts",
+    "start": "tsx --env-file-if-exists=../../.env src/start-all.ts",
+    "ui": "tsx --env-file-if-exists=../../.env src/ui-server.ts",
     "ui:live": "tsx --env-file=../../.env src/ui-server.ts",
     "proof:live": "tsx --env-file=../../.env src/run-live-proof.ts"
   },

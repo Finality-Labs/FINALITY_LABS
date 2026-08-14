@@ -222,6 +222,16 @@ this.ws = new WebSocket(url);
         this.state.status = 'closed';
         this.state.error = message.reason;
         break;
+
+      case 'resume': {
+        // Reconnect snapshot from the server: restore transcript + turn so the
+        // rejoining party resumes the negotiation instead of restarting it.
+        this.state.transcript = message.transcript ?? [];
+        this.state.lastTerms = message.lastTerms ?? null;
+        this.state.round = message.round ?? 0;
+        this.state.status = 'active';
+        break;
+      }
     }
   }
 
@@ -237,7 +247,7 @@ this.ws = new WebSocket(url);
       } as PartyIdentity;
 
       if (message.type === 'counteroffer') {
-  this.state.lastTerms = message.terms;
+  this.state.lastTerms = message.payload;
   this.state.round = message.round;
 }
     }

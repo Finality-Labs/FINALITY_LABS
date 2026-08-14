@@ -72,7 +72,8 @@ export function VerificationActionButtons({
 
   const buyerDecision = useSubmitBuyerDecision({
     onSuccess: (data) => {
-      toast.success(data.status === 'verified' ? 'Verification approved' : 'Verification rejected');
+      const status = data.record.verification?.status;
+      toast.success(status === 'verified' ? 'Verification approved' : 'Verification rejected');
       onStatusChange?.();
     },
     onError: (error) => {
@@ -82,7 +83,7 @@ export function VerificationActionButtons({
 
   const adminOverride = useSubmitAdminOverride({
     onSuccess: (data) => {
-      toast.success(`Admin override: ${data.status}`);
+      toast.success(`Admin override: ${data.record.verification?.status ?? 'applied'}`);
       onStatusChange?.();
     },
     onError: (error) => {

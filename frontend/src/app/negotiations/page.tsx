@@ -7,6 +7,7 @@
 
 import * as React from 'react';
 import { useState } from 'react';
+import Link from 'next/link';
 import { ChevronDown, ChevronUp, Search, Filter, X, ExternalLink, Loader2 } from 'lucide-react';
 import { intakeApi } from '@/lib/api';
 import {
@@ -371,9 +372,11 @@ const NegotiationDetail = ({ negotiation, onClose }: { negotiation: NegotiationR
         <div className="flex items-center justify-end gap-3 p-4 border-t border-[#333333]/14">
           <Button variant="secondary" onClick={onClose}>Close</Button>
           {negotiation.status === 'active' && (
-            <Button onClick={onClose}>
-              Enter Negotiation Room
-            </Button>
+            <Link href={`/negotiations/${negotiation.id}?role=${negotiation.role}`} onClick={onClose}>
+              <Button>
+                Enter Negotiation Room
+              </Button>
+            </Link>
           )}
         </div>
       </div>

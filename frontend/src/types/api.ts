@@ -56,11 +56,34 @@ export interface Offer {
   registryVersion?: number;
 }
 
+export interface MatchParty {
+  agentRegistry: string;
+  agentId: string;
+  wallet: string;
+}
+
+/** Details of a real match, returned by the matchmaker so clients can render
+ * the match card (buyer agent, seller agent, resource, proposed price,
+ * constraints) without hardcoding values. */
+export interface MatchDetails {
+  buyer: MatchParty;
+  seller: MatchParty;
+  resource: string;
+  unit: string;
+  qty: number;
+  /** Proposed price per unit (the seller's asking price for an intent match). */
+  unitPrice: number;
+  /** Constraints the matched counterparty carries (requirements). */
+  requirements: Record<string, unknown>;
+  terms?: string;
+}
+
 export interface CreateIntentResponse {
   intentId: string;
   matched?: boolean;
   roomId?: string;
   wssUrl?: string;
+  match?: MatchDetails;
 }
 
 export interface CreateOfferResponse {
@@ -68,12 +91,14 @@ export interface CreateOfferResponse {
   matched?: boolean;
   roomId?: string;
   wssUrl?: string;
+  match?: MatchDetails;
 }
 
 export interface MatchLookupResponse {
   matched: boolean;
   roomId?: string;
   wssUrl?: string;
+  match?: MatchDetails;
 }
 
 export interface OfferPulseResponse {
@@ -151,7 +176,17 @@ export type SystemEnvelope =
   | { type: 'system'; kind: 'error'; message: string; ts: number }
   | { type: 'system'; kind: 'deal-closed'; deal: ClosedDeal; transcriptHash: string; ts: number }
   | { type: 'system'; kind: 'constraint-hit'; lastTerms: Terms | null; reason: string; ts: number }
-  | { type: 'system'; kind: 'info'; message: string; ts: number };
+  | { type: 'system'; kind: 'info'; message: string; ts: number }
+  | {
+      // Reconnect snapshot sent to a party joining a room mid-negotiation.
+      type: 'system';
+      kind: 'resume';
+      transcript: Array<{ type: string; from: NegotiationRole; round: number; payload: unknown; ts: number }>;
+      turn: NegotiationRole | null;
+      round: number;
+      lastTerms: Terms | null;
+      ts: number;
+    };
 
 // Client -> Server messages
 export type ClientMessage =
@@ -195,7 +230,7 @@ export type ClientMessage =
 
 // Server -> Client messages
 export type ServerMessage =
-  | { type: 'counteroffer'; from: NegotiationRole; round: number; terms: Terms; ts: number }
+  | { type: 'counteroffer'; from: NegotiationRole; round: number; payload: Terms; ts: number }
   | { type: 'accept'; from: NegotiationRole; round: number; ts: number }
   | { type: 'reject'; from: NegotiationRole; round: number; reason: string; ts: number }
   | { type: 'close'; from: NegotiationRole; round: number; reason: string; ts: number }
@@ -417,6 +452,40 @@ export interface Erc8004Config {
   trustModels: string[];
 }
 
+/** A registered ERC-8004 agent discovered on-chain for a wallet (read-only). */
+export interface Erc8004DiscoveredAgent {
+  agentId: string;
+  wallet: string;
+  owner: string;
+  agentURI: string;
+  txHash: string;
+  explorerUrl: string;
+  metadata?: {
+    name?: string;
+    description?: string;
+    image?: string;
+    services?: Array<Record<string, unknown>>;
+    x402Support?: boolean;
+    active?: boolean;
+    supportedTrust?: string[];
+  };
+}
+
+/** Response of GET /erc8004/agents-by-wallet */
+export interface Erc8004AgentsByWalletResponse {
+  ok: boolean;
+  wallet?: string;
+  network?: {
+    chainId: number;
+    network: string;
+    identityRegistry: string;
+    rpcUrl: string;
+    explorer: string;
+  };
+  agents: Erc8004DiscoveredAgent[];
+  error?: string;
+}
+
 // ============================================
 // Verification Types
 // ============================================
@@ -532,11 +601,59 @@ export interface AdminOverrideSubmission {
   notes?: string;
 }
 
+// Response of the approval-workflow action endpoints (seller completion,
+// buyer decision, admin override). Carries the updated real settlement record
+// whose `verification` reflects the re-run result.
+export interface VerificationActionResponse {
+  ok: boolean;
+  record: RoomSettlementRecord;
+}
+
 export interface VerificationListResponse {
   verifications: VerificationDashboardView[];
   total: number;
   page: number;
   pageSize: number;
+}
+
+// ============================================
+// Room Settlement / Verification Read Types (negotiate :3002)
+// Mirrors the in-memory SettlementRecord produced by the existing
+// verification flow (packages/negotiate/src/settle.ts) and served over
+// GET /settlements/:roomId. Carries the REAL closed deal + REAL verification.
+// ============================================
+
+export interface RoomSettlementRecord {
+  roomId: string;
+  response: {
+    ok: boolean;
+    status: number;
+    body?: unknown;
+    error?: string;
+  };
+  recordedAt: string;
+  verification?: {
+    requestId?: string;
+    status: VerificationStatus;
+    passed: boolean;
+    finalStatus?: VerificationStatus;
+    startedAt?: string;
+    completedAt?: string;
+    verdicts: Array<{
+      verdictId?: string;
+      verifierId: string;
+      verifierName: string;
+      status: string;
+      proof?: string;
+      rejectionReason?: string;
+      timestamp?: string;
+      metadata?: Record<string, unknown>;
+    }>;
+  };
+  deal?: ClosedDeal;
+  transcriptHash?: string;
+  settlementBlocked?: boolean;
+  settlementBlockReason?: string;
 }
 
 export type Role = 'buyer' | 'seller';

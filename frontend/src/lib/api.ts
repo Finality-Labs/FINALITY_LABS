@@ -27,15 +27,17 @@ import {
   type AgentRegistrationForm,
   type RegistrationResponse,
   type Erc8004Config,
+  type Erc8004AgentsByWalletResponse,
   type ValidateUriResponse,
   type VerificationStatus,
-  type VerificationVerdict,
   type VerificationRequest,
   type VerificationDashboardView,
   type VerificationListResponse,
+  type VerificationActionResponse,
   type SellerCompletionSubmission,
   type BuyerDecisionSubmission,
   type AdminOverrideSubmission,
+  type RoomSettlementRecord,
 } from '@/types/api';
 
 class ApiClient {
@@ -234,6 +236,15 @@ class ApiClient {
     return res.json();
   }
 
+  async getErc8004AgentsByWallet(wallet: string): Promise<Erc8004AgentsByWalletResponse> {
+    const res = await fetch(`${this.config.chainBaseUrl}/erc8004/agents-by-wallet?wallet=${encodeURIComponent(wallet)}`);
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Failed to discover ERC-8004 agents' }));
+      throw new Error(error.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
   // ============================================
   // Orchestrator/UI API (Port 3000)
   // ============================================
@@ -254,7 +265,10 @@ class ApiClient {
   }
 
   // ============================================
-  // Verification API (Port 3004 or part of chain)
+  // Verification API (negotiate :3002)
+  // The verification workflow (deal-close check, seller completion, buyer
+  // approval, admin override) runs inside the negotiate server, so these call
+  // the same base URL as the settlement read endpoints below.
   // ============================================
 
   async getVerifications(
@@ -270,7 +284,7 @@ class ApiClient {
     if (status) params.append('status', status);
     if (agentId) params.append('agentId', agentId);
 
-    const res = await fetch(`${this.config.chainBaseUrl}/verifications?${params}`);
+    const res = await fetch(`${this.negotiateBaseUrl}/verifications?${params}`);
     if (!res.ok) {
       const error = await res.json().catch(() => ({ error: 'Failed to get verifications' }));
       throw new Error(error.error || `HTTP ${res.status}`);
@@ -279,7 +293,7 @@ class ApiClient {
   }
 
   async getVerification(requestId: string): Promise<VerificationDashboardView> {
-    const res = await fetch(`${this.config.chainBaseUrl}/verifications/${requestId}`);
+    const res = await fetch(`${this.negotiateBaseUrl}/verifications/${requestId}`);
     if (!res.ok) {
       const error = await res.json().catch(() => ({ error: 'Failed to get verification' }));
       throw new Error(error.error || `HTTP ${res.status}`);
@@ -287,8 +301,8 @@ class ApiClient {
     return res.json();
   }
 
-  async submitSellerCompletion(submission: SellerCompletionSubmission): Promise<VerificationVerdict> {
-    const res = await fetch(`${this.config.chainBaseUrl}/verifications/${submission.requestId}/seller-complete`, {
+  async submitSellerCompletion(submission: SellerCompletionSubmission): Promise<VerificationActionResponse> {
+    const res = await fetch(`${this.negotiateBaseUrl}/verifications/${submission.requestId}/seller-complete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(submission),
@@ -300,8 +314,8 @@ class ApiClient {
     return res.json();
   }
 
-  async submitBuyerDecision(submission: BuyerDecisionSubmission): Promise<VerificationVerdict> {
-    const res = await fetch(`${this.config.chainBaseUrl}/verifications/${submission.requestId}/buyer-decision`, {
+  async submitBuyerDecision(submission: BuyerDecisionSubmission): Promise<VerificationActionResponse> {
+    const res = await fetch(`${this.negotiateBaseUrl}/verifications/${submission.requestId}/buyer-decision`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(submission),
@@ -313,14 +327,45 @@ class ApiClient {
     return res.json();
   }
 
-  async submitAdminOverride(submission: AdminOverrideSubmission): Promise<VerificationVerdict> {
-    const res = await fetch(`${this.config.chainBaseUrl}/verifications/${submission.requestId}/admin-override`, {
+  async submitAdminOverride(submission: AdminOverrideSubmission): Promise<VerificationActionResponse> {
+    const res = await fetch(`${this.negotiateBaseUrl}/verifications/${submission.requestId}/admin-override`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(submission),
     });
     if (!res.ok) {
       const error = await res.json().catch(() => ({ error: 'Failed to submit admin override' }));
+      throw new Error(error.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  // ============================================
+  // Room Settlement / Verification Read API (negotiate :3002)
+  // Returns the in-memory SettlementRecord the EXISTING verification flow
+  // already produces when a deal closes — real deal data + real verdicts.
+  // ============================================
+
+  private get negotiateBaseUrl(): string {
+    return this.config.negotiateWsUrl
+      .replace(/^wss:\/\//, 'https://')
+      .replace(/^ws:\/\//, 'http://');
+  }
+
+  async getSettlement(roomId: string): Promise<RoomSettlementRecord | null> {
+    const res = await fetch(`${this.negotiateBaseUrl}/settlements/${encodeURIComponent(roomId)}`);
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Failed to get settlement' }));
+      throw new Error(error.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  async getSettlements(): Promise<RoomSettlementRecord[]> {
+    const res = await fetch(`${this.negotiateBaseUrl}/settlements`);
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Failed to get settlements' }));
       throw new Error(error.error || `HTTP ${res.status}`);
     }
     return res.json();
@@ -352,6 +397,7 @@ export const chainApi = {
     registerAgent: (form: AgentRegistrationForm) => apiClient.registerAgent(form),
     validateAgentUri: (agentUri: string) => apiClient.validateAgentUri(agentUri),
     getConfig: () => apiClient.getErc8004Config(),
+    getAgentsByWallet: (wallet: string) => apiClient.getErc8004AgentsByWallet(wallet),
   },
   // Verification API
   verifications: {
@@ -365,4 +411,9 @@ export const chainApi = {
 
 export const orchestratorApi = {
   runDeal: (params: RunDealRequest) => apiClient.runDeal(params),
+};
+
+export const negotiateApi = {
+  getSettlement: (roomId: string) => apiClient.getSettlement(roomId),
+  getSettlements: () => apiClient.getSettlements(),
 };

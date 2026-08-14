@@ -16,6 +16,14 @@ export class Store {
         return id;
     }
     createRoom(intentId, offerId) {
+        // A logical match (intent+offer) has exactly ONE authoritative room. The
+        // matchmaker re-runs on offer pulses and repeated match attempts; minting a
+        // fresh room each time would hand the two sides different roomIds and they'd
+        // never meet. Reuse the existing room for the same (intentId, offerId) pair.
+        for (const r of this.rooms.values()) {
+            if (r.intentId === intentId && r.offerId === offerId)
+                return r;
+        }
         const room = { roomId: nextId("room"), intentId, offerId, status: "open" };
         this.rooms.set(room.roomId, room);
         return room;

@@ -22,7 +22,9 @@ import {
   updateIdentityStatus,
   hasRegisteredAgent,
   getAgentIdentityForForm,
+  saveDiscoveredAgents,
 } from '@/lib/agent-storage';
+import { chainApi } from '@/lib/api';
 
 // ============================================
 // Context Types
@@ -85,8 +87,45 @@ export function AgentIdentityProvider({ children, initialWallet = null }: AgentI
   const [allIdentities, setAllIdentities] = React.useState<StoredAgentIdentity[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
 
-  // Load identities when wallet or config changes
-  const loadIdentities = React.useCallback(() => {
+  // Guard against overlapping discovery calls (wallet switch / double render).
+  const discoveryInFlightRef = React.useRef(false);
+
+  // Discover the wallet's real ERC-8004 agents on-chain (read-only) and
+  // persist them, reusing the same identity-storage pipeline as a successful
+  // registration. Enables LIVE mode so the discovered agent is surfaced.
+  const discoverAndPersist = React.useCallback(async (address: string) => {
+    if (discoveryInFlightRef.current) return;
+    discoveryInFlightRef.current = true;
+
+    try {
+      const res = await chainApi.erc8004.getAgentsByWallet(address);
+      if (!res.ok || !res.agents || res.agents.length === 0 || !res.network) return;
+
+      const saved = saveDiscoveredAgents(address, res.agents, {
+        chainId: res.network.chainId,
+        network: res.network.network,
+        identityRegistry: res.network.identityRegistry,
+        rpcUrl: res.network.rpcUrl,
+        explorer: res.network.explorer,
+      });
+      if (saved.length === 0) return;
+
+      // Mirror register-agent's setMode(true): a registered agent exists, so
+      // route the dashboard/create pages to the real ERC-8004 identity.
+      setAgentModeConfig({ useErc8004Agents: true });
+      setConfigState(prev => ({ ...prev, useErc8004Agents: true }));
+    } catch (err) {
+      console.error('Failed to discover ERC-8004 agents:', err);
+    } finally {
+      discoveryInFlightRef.current = false;
+    }
+  }, []);
+
+  // Load identities when wallet changes. If the wallet has no locally-stored
+  // registered identity (e.g. localStorage was cleared or registration
+  // predates persistence), fall back to on-chain discovery — never a new
+  // registration transaction.
+  const loadIdentities = React.useCallback(async () => {
     if (!wallet) {
       setPrimaryIdentity(null);
       setAllIdentities([]);
@@ -95,17 +134,22 @@ export function AgentIdentityProvider({ children, initialWallet = null }: AgentI
     }
 
     setIsLoading(true);
-    
-    // Small timeout to allow localStorage to be ready
-    setTimeout(() => {
-      const identities = getStoredIdentities(wallet);
-      const primary = getPrimaryIdentity(wallet);
-      
-      setAllIdentities(identities);
-      setPrimaryIdentity(primary);
-      setIsLoading(false);
-    }, 0);
-  }, [wallet]);
+
+    const identities = getStoredIdentities(wallet);
+    const primary = getPrimaryIdentity(wallet);
+
+    setAllIdentities(identities);
+    setPrimaryIdentity(primary);
+
+    const hasRegistered = identities.some(id => id.status === 'registered');
+    if (!hasRegistered) {
+      await discoverAndPersist(wallet);
+      setAllIdentities(getStoredIdentities(wallet));
+      setPrimaryIdentity(getPrimaryIdentity(wallet));
+    }
+
+    setIsLoading(false);
+  }, [wallet, discoverAndPersist]);
 
   React.useEffect(() => {
     loadIdentities();

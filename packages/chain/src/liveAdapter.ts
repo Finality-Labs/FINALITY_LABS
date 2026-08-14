@@ -18,6 +18,7 @@ import { parseUnits, type Log } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { ChainConfig } from "./config.js";
 import { GOAT_NETWORKS } from "./config.js";
+import { GOAT_TESTNET3_IDENTITY_REGISTRY } from "./erc8004.js";
 import type { ProofOfPayment, ReputationSummary } from "./reputation.js";
 
 export interface LiveAdapter {
@@ -66,8 +67,7 @@ export async function createLiveAdapter(cfg: ChainConfig): Promise<LiveAdapter> 
   const { http, createPublicClient } = await import("viem");
 
   const net = GOAT_NETWORKS[cfg.network];
-  const FINALITY_IDENTITY_REGISTRY =
-    "0x54B8d8E2455946f2A5B8982283f2359812e815ce";
+  const FINALITY_IDENTITY_REGISTRY = GOAT_TESTNET3_IDENTITY_REGISTRY.address;
   const account = privateKeyToAccount(cfg.privateKey as `0x${string}`);
   const feedbackAccount = privateKeyToAccount(
     (cfg.feedbackPrivateKey ?? cfg.privateKey) as `0x${string}`

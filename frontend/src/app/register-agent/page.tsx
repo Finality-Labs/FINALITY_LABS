@@ -9,8 +9,16 @@ import * as React from 'react';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Loader2, CheckCircle, AlertCircle, Plus, Trash2, Copy, ExternalLink, Github } from 'lucide-react';
+import { Loader2, CheckCircle, AlertCircle, Plus, Trash2, Copy, ExternalLink, Github, Wallet, ArrowRight } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { chainApi } from '@/lib/api';
+import { useWallet } from '@/hooks/use-wallet';
+import { useAgentIdentity, useAgentMode } from '@/context/agent-identity';
+import {
+  type AgentNetwork,
+  createIdentityFromRegistration,
+  GOAT_TESTNET3_NETWORK,
+} from '@/types/agent-identity';
 import {
   Button,
   Input,
@@ -33,6 +41,9 @@ import { type AgentService, type AgentRegistrationForm, type RegistrationRespons
 // Validation Schemas
 // ============================================
 
+/** GOAT Testnet3 (0xBE90) */
+const GOAT_TESTNET3_CHAIN_ID = 48816;
+
 const serviceSchema = z.object({
   name: z.string().min(1, 'Service name is required'),
   endpoint: z.string().min(1, 'Service endpoint is required').url('Invalid URL format'),
@@ -49,7 +60,8 @@ const registrationSchema = z.object({
   x402Support: z.boolean().default(false),
   active: z.boolean().default(true),
   supportedTrust: z.array(z.enum(['reputation', 'crypto-economic', 'tee-attestation'])).default([]),
-  agentURI: z.string().url().optional(),
+  // Custom agentURI is OPTIONAL. Empty string means "auto-create a GitHub Gist".
+  agentURI: z.string().url('Invalid agent URI').optional().or(z.literal('')),
   gistId: z.string().optional(),
 });
 
@@ -205,6 +217,11 @@ export default function AgentRegistrationPage() {
   const [config, setConfig] = React.useState<Erc8004Config | null>(null);
   const [lastResult, setLastResult] = React.useState<RegistrationResponse | null>(null);
 
+  const { account: wallet, isConnected, isConnecting, connect, chainId } = useWallet();
+  const router = useRouter();
+  const { registerIdentity } = useAgentIdentity();
+  const { setMode } = useAgentMode();
+
   const form = useForm<RegistrationFormData>({
     resolver: zodResolver(registrationSchema),
     defaultValues: {
@@ -232,35 +249,108 @@ export default function AgentRegistrationPage() {
     setIsSubmitting(true);
     setLastResult(null);
 
+    // Pre-submit wallet guards for the LIVE (on-chain) flow.
+    // Mock mode is intentionally left unchanged and does not require a wallet.
+    if (config?.liveReady) {
+      if (!isConnected) {
+        const message = 'Wallet not connected. Connect your MetaMask/Phantom wallet before registering on GOAT Testnet3.';
+        setLastResult({ ok: false, mode: 'live', error: message });
+        toast.error('Wallet not connected', { description: message });
+        setIsSubmitting(false);
+        return;
+      }
+      if (chainId !== null && chainId !== GOAT_TESTNET3_CHAIN_ID) {
+        const message = `Wrong network: wallet is on chain ${chainId}. Switch to GOAT Testnet3 (chain ID ${GOAT_TESTNET3_CHAIN_ID}, 0xBE90).`;
+        setLastResult({ ok: false, mode: 'live', error: message });
+        toast.error('Wrong network', { description: message });
+        setIsSubmitting(false);
+        return;
+      }
+    }
+
     try {
       const result = await chainApi.erc8004.registerAgent(data);
-      
+
       if (result.ok) {
         toast.success('Agent registered successfully!', {
-          description: result.mode === 'live' 
+          description: result.mode === 'live'
             ? `Agent ID: ${result.agentId} | Tx: ${result.txHash?.slice(0, 10)}...`
             : 'Agent URI generated (mock mode - not registered on-chain)',
         });
-        
+
+        // Persist the real registration result (Agent ID, tx, URI, network, wallet)
+        // so the Agent Dashboard can surface the registered identity.
+        if (wallet && result.agentId && result.txHash && result.agentURI) {
+          try {
+            const network: AgentNetwork = config
+              ? {
+                  chainId: config.chainId,
+                  network: config.network,
+                  identityRegistry: config.identityRegistry,
+                  rpcUrl: config.rpcUrl,
+                  explorer: config.explorer,
+                }
+              : GOAT_TESTNET3_NETWORK;
+
+            registerIdentity(
+              createIdentityFromRegistration(
+                wallet,
+                {
+                  agentId: result.agentId,
+                  txHash: result.txHash,
+                  agentURI: result.agentURI,
+                  mode: result.mode,
+                },
+                {
+                  name: data.name,
+                  description: data.description,
+                  image: data.image || undefined,
+                  services: data.services,
+                  x402Support: data.x402Support,
+                  active: data.active,
+                  supportedTrust: data.supportedTrust,
+                  agentURI: result.agentURI || data.agentURI,
+                  gistId: data.gistId,
+                },
+                network
+              )
+            );
+
+            // Route the dashboard/create pages to the real ERC-8004 agent.
+            setMode(true);
+          } catch (err) {
+            console.error('Failed to persist agent identity:', err);
+          }
+        }
+
         // Copy agentURI to clipboard if available
         if (result.agentURI) {
           navigator.clipboard.writeText(result.agentURI).catch(() => {});
         }
       } else {
+        const message = withFundsHint(result.error || 'Unknown error');
         toast.error('Registration failed', {
-          description: result.error || 'Unknown error',
+          description: message,
         });
+        setLastResult({ ...result, error: message });
+        return;
       }
-      
+
       setLastResult(result);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to register agent';
+      const message = withFundsHint(error instanceof Error ? error.message : 'Failed to register agent');
       toast.error('Registration failed', { description: message });
       setLastResult({ ok: false, mode: 'mock', error: message });
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  /** Append the faucet hint when the failure is due to missing testnet funds. */
+  const withFundsHint = (raw: string): string =>
+    /insufficient/i.test(raw)
+      ? `${raw} — Fund the signer wallet (GOAT_PRIVATE_KEY) with GOAT testnet tokens from https://bridge.testnet3.goat.network/faucet.`
+      : raw;
 
   const addService = () => {
     append({ name: '', endpoint: '', version: '', skills: [], domains: [] });
@@ -278,17 +368,35 @@ export default function AgentRegistrationPage() {
         title="Register Agent (ERC-8004)"
         description="Create an ERC-8004 compliant agent identity. Your metadata will be uploaded to a public GitHub Gist and registered on the GOAT Testnet3 Identity Registry."
         action={
-          config && (
-            <div className="flex items-center gap-2">
-              <Badge variant={config.gistConfigured ? 'success' : 'warning'}>
-                {config.gistConfigured ? 'Gist Ready' : 'No GITHUB_TOKEN'}
-              </Badge>
-              <Badge variant={config.liveReady ? 'success' : 'default'}>
-                {config.liveReady ? 'Live Mode' : 'Mock Mode'}
-              </Badge>
-              <Badge variant="default">{config.network}</Badge>
-            </div>
-          )
+          <div className="flex flex-wrap items-center gap-2">
+            {isConnected ? (
+              <>
+                <Badge variant="success">
+                  <Wallet className="h-3 w-3 mr-1" />
+                  {wallet?.slice(0, 6)}...{wallet?.slice(-4)}
+                </Badge>
+                <Badge variant={chainId === GOAT_TESTNET3_CHAIN_ID ? 'success' : 'warning'}>
+                  {chainId === GOAT_TESTNET3_CHAIN_ID ? 'GOAT Testnet3' : `Chain ${chainId ?? '?'}`}
+                </Badge>
+              </>
+            ) : (
+              <Button variant="secondary" size="sm" onClick={() => connect()} loading={isConnecting}>
+                <Wallet className="h-3 w-3 mr-1" />
+                Connect Wallet
+              </Button>
+            )}
+            {config && (
+              <>
+                <Badge variant={config.gistConfigured ? 'success' : 'warning'}>
+                  {config.gistConfigured ? 'Gist Ready' : 'No GITHUB_TOKEN'}
+                </Badge>
+                <Badge variant={config.liveReady ? 'success' : 'default'}>
+                  {config.liveReady ? 'Live Mode' : 'Mock Mode'}
+                </Badge>
+                <Badge variant="default">{config.network}</Badge>
+              </>
+            )}
+          </div>
         }
       />
 
@@ -328,7 +436,7 @@ export default function AgentRegistrationPage() {
             ) : (
               <AlertCircle className="h-5 w-5 flex-shrink-0" />
             )}
-            <span className="font-medium">{lastResult.ok ? 'Success' : 'Error'}</span>
+            <span className="font-medium">{lastResult.ok ? 'Registration Complete' : 'Registration Failed'}</span>
             <Badge variant={lastResult.mode === 'live' ? 'success' : 'default'} className="ml-auto">
               {lastResult.mode}
             </Badge>
@@ -343,6 +451,15 @@ export default function AgentRegistrationPage() {
                 <Button variant="ghost" size="sm" onClick={() => copyToClipboard(lastResult.agentId!, 'Agent ID')}>
                   <Copy className="h-3 w-3" />
                 </Button>
+                <a
+                  href={`https://testnet.8004scan.io/agents/${lastResult.agentId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-1 flex items-center gap-1 text-sm text-blue-600 hover:underline"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  8004scan
+                </a>
               </div>
               
               {lastResult.txHash && (
@@ -388,6 +505,15 @@ export default function AgentRegistrationPage() {
                   </div>
                 ) : null;
               })()}
+            </div>
+          )}
+
+          {lastResult.ok && (
+            <div className="mt-4 pt-4 border-t border-[#3fb950]/30 flex items-center justify-end">
+              <Button onClick={() => router.push('/dashboard')}>
+                Continue to Agent Dashboard
+                <ArrowRight className="h-4 w-4" />
+              </Button>
             </div>
           )}
         </div>

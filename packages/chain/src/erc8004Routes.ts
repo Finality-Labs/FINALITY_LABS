@@ -5,7 +5,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { loadChainConfig, isLiveReady, explorerBase } from './config.js';
+import { loadChainConfig, isLiveReady, explorerBase, GOAT_NETWORKS } from './config.js';
 import { getLiveAdapter } from './deals.js';
 import { 
   AgentRegistrationFormSchema, 
@@ -35,8 +35,9 @@ const registrationRequestSchema = z.object({
   x402Support: z.boolean().default(false),
   active: z.boolean().default(true),
   supportedTrust: z.array(z.enum(['reputation', 'crypto-economic', 'tee-attestation'])).default([]),
-  // Optional: override the agentURI if already hosted elsewhere
-  agentURI: z.string().url().optional(),
+  // Optional: override the agentURI if already hosted elsewhere.
+  // Empty string is allowed and falls through to the Gist-upload path.
+  agentURI: z.string().url().optional().or(z.literal('')),
   // Optional: Gist ID to update existing gist
   gistId: z.string().optional(),
 });
@@ -51,6 +52,183 @@ export interface RegistrationResponse {
   gist?: GistUploadResult;
   error?: string;
   details?: unknown;
+}
+
+// ============================================
+// Agent Discovery (read-only, no transactions)
+// ============================================
+
+/** AgentRegistered(uint256 indexed agentId, address indexed owner, string agentURI) */
+const AGENT_REGISTERED_TOPIC = '0xca52e62c367d81bb2e328eb795f7c7ba24afb478408a26c0e201d155c449bc4a';
+
+/** How far back to scan for AgentRegistered logs (matches the GOAT dashboard server). */
+const DISCOVERY_LOOKBACK_BLOCKS = BigInt(process.env.GOAT_DISCOVERY_LOOKBACK_BLOCKS ?? '500000');
+
+export interface DiscoveredAgent {
+  agentId: string;
+  wallet: string;
+  owner: string;
+  agentURI: string;
+  txHash: string;
+  explorerUrl: string;
+  metadata?: {
+    name?: string;
+    description?: string;
+    image?: string;
+    services?: Array<Record<string, unknown>>;
+    x402Support?: boolean;
+    active?: boolean;
+    supportedTrust?: string[];
+  };
+}
+
+export interface AgentsByWalletResponse {
+  ok: boolean;
+  wallet?: string;
+  network?: {
+    chainId: number;
+    network: string;
+    identityRegistry: string;
+    rpcUrl: string;
+    explorer: string;
+  };
+  agents: DiscoveredAgent[];
+  error?: string;
+}
+
+/**
+ * Discover ERC-8004 agents owned by a wallet on GOAT Testnet3 (READ-ONLY).
+ *
+ * The Identity Registry is NOT ERC-721 enumerable, so instead of
+ * tokenOfOwnerByIndex we scan AgentRegistered events filtered by owner and
+ * re-verify current ownership with ownerOf() at read time. The authoritative
+ * agentURI comes from tokenURI(agentId). Reuses handleValidateAgentURI to
+ * enrich the result with the agent's registration metadata (best effort).
+ *
+ * No transaction is ever created — this only proves an existing registration.
+ */
+export async function handleDiscoverAgentsByWallet(
+  wallet: string
+): Promise<AgentsByWalletResponse> {
+  const { createPublicClient, http, parseAbi } = await import('viem');
+
+  const normalized = wallet.toLowerCase();
+  const cfg = loadChainConfig();
+  const net = GOAT_NETWORKS[cfg.network] ?? GOAT_NETWORKS['goat-testnet'];
+  const rpcUrl = cfg.rpcUrl ?? net.rpcUrl;
+
+  const pc = createPublicClient({
+    chain: {
+      id: net.chainId,
+      name: cfg.network,
+      nativeCurrency: { name: 'GOAT', symbol: 'GOAT', decimals: 18 },
+      rpcUrls: { default: { http: [rpcUrl] } },
+    },
+    transport: http(rpcUrl),
+  });
+
+  const registry = GOAT_TESTNET3_IDENTITY_REGISTRY.address;
+  const abi = parseAbi([
+    'function ownerOf(uint256 agentId) view returns (address)',
+    'function getAgentWallet(uint256 agentId) view returns (address)',
+    'function tokenURI(uint256 agentId) view returns (string)',
+  ]);
+  const network = {
+    chainId: GOAT_TESTNET3_IDENTITY_REGISTRY.chainId,
+    network: GOAT_TESTNET3_IDENTITY_REGISTRY.network,
+    identityRegistry: registry,
+    rpcUrl: GOAT_TESTNET3_IDENTITY_REGISTRY.rpcUrl,
+    explorer: GOAT_TESTNET3_IDENTITY_REGISTRY.explorer,
+  };
+
+  try {
+    const block = await pc.getBlockNumber();
+    const fromBlock = block > DISCOVERY_LOOKBACK_BLOCKS ? block - DISCOVERY_LOOKBACK_BLOCKS : 0n;
+    const ownerTopic = `0x${'0'.repeat(24)}${normalized.slice(2)}`;
+
+    const logs = await pc.getLogs({
+      address: registry as `0x${string}`,
+      topics: [AGENT_REGISTERED_TOPIC, null, ownerTopic] as any,
+      fromBlock,
+      toBlock: 'latest',
+    } as any);
+
+    const agents: DiscoveredAgent[] = [];
+    for (const log of logs) {
+      // Defensively verify the owner topic matches (some RPCs ignore topic filters).
+      const t2 = (log.topics[2] ?? '').toLowerCase();
+      if (t2 !== ownerTopic) continue;
+
+      const tokenId = BigInt(log.topics[1] ?? '0x0');
+      if (tokenId === 0n) continue; // skip malformed/mint-ish entries
+      const agentId = tokenId.toString();
+
+      // Re-verify the wallet still owns the token (transfer-safe).
+      let owner = '';
+      try {
+        owner = (await pc.readContract({
+          address: registry as `0x${string}`,
+          abi,
+          functionName: 'ownerOf',
+          args: [tokenId],
+        })) as string;
+      } catch {
+        // ignore; ownership unknown
+      }
+      if (owner && owner.toLowerCase() !== normalized) continue;
+
+      // Authoritative agentURI from the registry (updated after registration).
+      let agentURI = '';
+      try {
+        agentURI = (await pc.readContract({
+          address: registry as `0x${string}`,
+          abi,
+          functionName: 'tokenURI',
+          args: [tokenId],
+        })) as string;
+      } catch {
+        // ignore
+      }
+      if (!agentURI) continue;
+
+      const agent: DiscoveredAgent = {
+        agentId,
+        wallet: normalized,
+        owner: owner || normalized,
+        agentURI,
+        txHash: log.transactionHash,
+        explorerUrl: `${GOAT_TESTNET3_IDENTITY_REGISTRY.explorer}/token/${registry}/${agentId}`,
+      };
+
+      // Enrich with the agent's registration.json (best effort; never fails discovery).
+      try {
+        const check = await handleValidateAgentURI(agentURI);
+        if (check.ok && check.valid && check.registration) {
+          const reg = check.registration as Record<string, unknown>;
+          agent.metadata = {
+            name: typeof reg.name === 'string' ? reg.name : undefined,
+            description: typeof reg.description === 'string' ? reg.description : undefined,
+            image: typeof reg.image === 'string' ? reg.image : undefined,
+            services: Array.isArray(reg.services) ? (reg.services as Array<Record<string, unknown>>) : undefined,
+            x402Support: typeof reg.x402Support === 'boolean' ? reg.x402Support : undefined,
+            active: typeof reg.active === 'boolean' ? reg.active : undefined,
+            supportedTrust: Array.isArray(reg.supportedTrust) ? (reg.supportedTrust as string[]) : undefined,
+          };
+        }
+      } catch {
+        // metadata is optional
+      }
+
+      agents.push(agent);
+    }
+
+    // Newest tokenId first so clients can pick a deterministic primary agent.
+    agents.sort((a, b) => (BigInt(b.agentId) > BigInt(a.agentId) ? 1 : BigInt(b.agentId) < BigInt(a.agentId) ? -1 : 0));
+
+    return { ok: true, wallet: normalized, network, agents };
+  } catch (err) {
+    return { ok: false, wallet: normalized, network, agents: [], error: (err as Error).message };
+  }
 }
 
 /**
@@ -248,6 +426,16 @@ export function registerErc8004Routes(app: FastifyInstance): void {
     }
     const result = await handleValidateAgentURI(parsed.data.agentURI);
     return reply.code(200).send(result);
+  });
+
+  // GET /erc8004/agents-by-wallet?wallet=0x... - Discover a wallet's registered agents (READ-ONLY)
+  const walletParamSchema = z.object({ wallet: z.string().regex(/^0x[a-fA-F0-9]{40}$/) });
+  app.get('/erc8004/agents-by-wallet', async (request, reply) => {
+    const parsed = walletParamSchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, agents: [], error: 'wallet (0x-prefixed address) query param required' });
+    }
+    return handleDiscoverAgentsByWallet(parsed.data.wallet);
   });
 
   // GET /erc8004/config - Get registration configuration

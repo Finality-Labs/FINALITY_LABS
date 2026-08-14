@@ -261,9 +261,9 @@ export class VerificationManager {
     /**
      * Create a verification request from a deal result (from negotiation)
      */
-    static createRequestFromDeal(dealResult, context = {}) {
+    static createRequestFromDeal(dealResult, context = {}, requestId) {
         return {
-            requestId: `req_${crypto.randomUUID()}`,
+            requestId: requestId ?? `req_${crypto.randomUUID()}`,
             roomId: dealResult.roomId,
             transcriptHash: dealResult.transcriptHash,
             deal: dealResult.deal,

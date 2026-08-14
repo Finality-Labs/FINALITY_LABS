@@ -16,6 +16,9 @@ export interface PartyIdentity {
   // Price bound: buyer's hard ceiling (maxUnitPrice), seller's floor.
   maxUnitPrice?: number; // buyer
   floorUnitPrice?: number; // seller
+  // Resource type this party intends/offers (e.g. "gpu"). Recorded on the
+  // room and included in the ClosedDeal so verification can validate it.
+  resource?: string;
 }
 
 export type RoomStatus = "open" | "closed";
@@ -62,6 +65,11 @@ export class Room {
   private lastTerms: Terms | null = null;
   private result: DealResult | null = null;
 
+  // Resource type declared by the joined parties (first non-null wins). The
+  // two sides of one match agree on the same resource, so whichever joins
+  // first provides it; legacy identities that omit it leave it undefined.
+  private resource: string | undefined;
+
   constructor(
     roomId: string,
     config: Partial<NegotiationConfig> = {},
@@ -77,9 +85,11 @@ export class Room {
 
   // Returns the role assigned, or null if the room is full.
   join(role: "buyer" | "seller", identity: PartyIdentity, send: (data: string) => void): boolean {
+    if (this.status === "closed") return false; // room already concluded
     if (this.parties[role]) return false; // role already taken
     if (this.parties.buyer && this.parties.seller) return false; // room full
     this.parties[role] = { role, identity, send };
+    if (identity.resource && !this.resource) this.resource = identity.resource;
     this.broadcast({
       type: "system",
       kind: "info",
@@ -87,17 +97,51 @@ export class Room {
       ts: Date.now(),
     });
     // The first joiner is the buyer (natural initiator) unless roles were
-    // explicit; turn passes to buyer when the room is ready.
+    // explicit; when the room becomes ready the turn is whoever's move comes
+    // next per the transcript — buyer on a fresh room, the OPPOSITE of the last
+    // action when a party reconnects mid-negotiation (never reset to buyer).
     if (this.isFull) {
-      this.turn = "buyer";
+      this.turn = this.nextTurn();
       this.broadcast({
         type: "system",
         kind: "info",
-        message: "room ready — buyer to move",
+        message: `room ready — ${this.turn} to move`,
+        ts: Date.now(),
+      });
+    }
+    // Reconnect snapshot: replay the transcript + turn to the joiner so a
+    // reconnecting party restores its view instead of restarting the room.
+    if (this.transcript.length > 0) {
+      this.tell(role, {
+        type: "system",
+        kind: "resume",
+        transcript: [...this.transcript],
+        turn: this.turn,
+        round: this.round,
+        lastTerms: this.lastTerms,
         ts: Date.now(),
       });
     }
     return true;
+  }
+
+  // Remove a party from the room and release its role slot. Called when a
+  // participant's socket disconnects so the same role can reconnect (page
+  // refresh / dropped socket) without leaving a ghost occupant behind. The
+  // transcript is preserved; if the room is no longer full, the turn is
+  // cleared until a counterparty joins again.
+  leave(role: "buyer" | "seller"): void {
+    if (!this.parties[role]) return;
+    delete this.parties[role];
+    if (!this.isFull) {
+      this.turn = null;
+    }
+    this.broadcast({
+      type: "system",
+      kind: "info",
+      message: `${role} left`,
+      ts: Date.now(),
+    });
   }
 
   // Handle an incoming client frame (already JSON-parsed, raw).
@@ -168,15 +212,21 @@ export class Room {
       return;
     }
 
-    // minDelta: a counteroffer must move the price by >= minDelta from the last
-    // OPPOSING offer (within bounds). Prevents stalling.
+    // minDelta: a counteroffer must move the price by >= the effective minimum
+    // from the last OPPOSING offer (within bounds). Prevents stalling. The
+    // threshold adapts to the price scale (see minMove()).
     if (this.lastOffer && this.lastOffer.role !== role) {
-      const delta = Math.abs(unitPrice - this.lastOffer.unitPrice);
-      if (delta < this.config.minDelta) {
+      const opposing = this.lastOffer.unitPrice;
+      const required = this.minMove(opposing);
+      const delta = Math.abs(unitPrice - opposing);
+      // Relative tolerance absorbs float noise so exact-boundary moves (e.g. a
+      // 1% move at 1000) are never spuriously rejected as sub-minDelta.
+      const tolerance = Math.max(Math.abs(opposing), Math.abs(unitPrice), required) * 1e-9;
+      if (delta < required - tolerance) {
         this.tell(role, {
           type: "system",
           kind: "error",
-          message: `price moved < minDelta (${this.config.minDelta}) from opposing ${this.lastOffer.unitPrice}`,
+          message: `price moved < minDelta (${Number(required.toFixed(12))}) from opposing ${opposing}`,
           ts: Date.now(),
         });
         return;
@@ -278,6 +328,7 @@ export class Room {
       qty: agreed.qty,
       terms: agreed.terms,
       totalUsdc: agreed.unitPrice * agreed.qty,
+      resource: this.resource,
     };
     const transcriptHash = this.computeHash();
     this.result = { roomId: this.roomId, transcriptHash, deal };
@@ -313,6 +364,27 @@ export class Room {
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
+
+  // Effective minimum price move for the current turn, generic across price
+  // scales. An explicit absolute `minDelta` is honored verbatim (it pins the
+  // old behavior); otherwise the threshold adapts to the negotiation's price
+  // scale as a fraction of the last opposing price, so the DEFAULT config
+  // serves micro USDC prices (0.000090) and large deals without per-room code.
+  private minMove(opposing: number): number {
+    if (this.config.minDelta != null) return this.config.minDelta;
+    return Math.abs(opposing) * this.config.minMoveFraction;
+  }
+
+  // The next actor is the opposite of whoever made the last accepted move; on a
+  // fresh room the buyer moves first. Deriving it from the transcript (instead
+  // of defaulting to buyer) is what keeps the turn correct across reconnects.
+  private nextTurn(): "buyer" | "seller" {
+    for (let i = this.transcript.length - 1; i >= 0; i--) {
+      const e = this.transcript[i];
+      if (e.type === "msg") return e.from === "buyer" ? "seller" : "buyer";
+    }
+    return "buyer";
+  }
 
   private checkTurn(role: "buyer" | "seller"): boolean {
     if (this.turn === null) {

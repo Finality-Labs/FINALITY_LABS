@@ -44,9 +44,16 @@ describe("intake HTTP API", () => {
     expect(body.matched).toBe(true);
     expect(body.roomId).toBeTruthy();
     expect(body.wssUrl).toContain("/negotiate/");
+    // match details carry the real counterparty (seller offer) data
+    expect(body.match?.seller.agentId).toBe("2");
+    expect(body.match?.buyer.agentId).toBe("1");
+    expect(body.match?.resource).toBe("gpu");
+    expect(body.match?.unitPrice).toBe(18);
+    expect(body.match?.requirements).toEqual({ cuda: "12.1", gpu: "H100" });
     // lookup via matches endpoint
     const m = await app.inject({ method: "GET", url: `/matches/${body.intentId}` });
     expect(m.json().matched).toBe(true);
+    expect(m.json().match?.seller.agentId).toBe("2");
   });
 
   it("mismatched offer returns matched:false", async () => {

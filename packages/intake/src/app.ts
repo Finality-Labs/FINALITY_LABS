@@ -6,7 +6,7 @@ import { registerRoutes } from "./routes";
 import { seed } from "./seed";
 import { PulseService } from "./pulse";
 
-export function buildApp() {
+export function buildApp(opts: { seedFixtures?: boolean } = {}) {
   const app = Fastify({ logger: false });
   app.register(cors, { origin: true });
 
@@ -16,7 +16,10 @@ export function buildApp() {
   registerRoutes(app, store, matchmaker, pulse);
 
   // Seed the artifact's example cast so a match is demonstrable on boot.
-  seed(store);
+  // Tests that need a clean store can opt out via { seedFixtures: false }.
+  if (opts.seedFixtures !== false) {
+    seed(store);
+  }
 
   return app;
 }

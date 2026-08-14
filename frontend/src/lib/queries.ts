@@ -266,7 +266,7 @@ export function useVerification(
 }
 
 export function useSubmitSellerCompletion(
-  options?: UseMutationOptions<import('@/types/api').VerificationVerdict, Error, SellerCompletionSubmission>
+  options?: UseMutationOptions<import('@/types/api').VerificationActionResponse, Error, SellerCompletionSubmission>
 ) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -280,7 +280,7 @@ export function useSubmitSellerCompletion(
 }
 
 export function useSubmitBuyerDecision(
-  options?: UseMutationOptions<import('@/types/api').VerificationVerdict, Error, BuyerDecisionSubmission>
+  options?: UseMutationOptions<import('@/types/api').VerificationActionResponse, Error, BuyerDecisionSubmission>
 ) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -294,7 +294,7 @@ export function useSubmitBuyerDecision(
 }
 
 export function useSubmitAdminOverride(
-  options?: UseMutationOptions<import('@/types/api').VerificationVerdict, Error, AdminOverrideSubmission>
+  options?: UseMutationOptions<import('@/types/api').VerificationActionResponse, Error, AdminOverrideSubmission>
 ) {
   const queryClient = useQueryClient();
   return useMutation({

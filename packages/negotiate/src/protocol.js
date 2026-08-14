@@ -24,9 +24,16 @@ export const EnvelopeSchema = z.object({
     payload: z.record(z.unknown()).optional(),
     ts: z.number().optional(),
 });
+export const DEFAULT_MIN_MOVE_FRACTION = 0.01;
+// Negotiation policy (contract §4 "Server-enforced constraints").
+//   minDelta         optional ABSOLUTE min move; when set, used verbatim.
+//   minMoveFraction  adaptive DEFAULT: a counteroffer must move by at least
+//                    `minMoveFraction` × the last opposing price (0.01 → 1%),
+//                    so one config serves micro prices (0.000090) and large
+//                    deals while still rejecting sub-1% stalling moves.
 export const DEFAULT_CONFIG = {
     maxRounds: 10,
-    minDelta: 0.01,
+    minMoveFraction: DEFAULT_MIN_MOVE_FRACTION,
 };
 // Parse + structurally validate an incoming client frame. Returns the typed
 // envelope or a zod error. `system` frames from clients are rejected by the

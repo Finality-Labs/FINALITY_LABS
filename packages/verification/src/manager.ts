@@ -351,10 +351,11 @@ export class VerificationManager {
         totalUsdc: number;
       };
     },
-    context: Record<string, unknown> = {}
+    context: Record<string, unknown> = {},
+    requestId?: string
   ): VerificationRequest {
     return {
-      requestId: `req_${crypto.randomUUID()}`,
+      requestId: requestId ?? `req_${crypto.randomUUID()}`,
       roomId: dealResult.roomId,
       transcriptHash: dealResult.transcriptHash,
       deal: dealResult.deal,
