@@ -18,6 +18,8 @@
  * GOAT Testnet3 (chainId 48816) is the only supported network for Stage 1.
  */
 
+import { GOAT_NETWORKS, loadChainConfig } from './config.js';
+
 export interface X402Config {
   /** Base URL for the GOAT Flow x402 API (e.g., https://flow-api.testnet3.goat.network) */
   baseUrl: string;
@@ -31,10 +33,10 @@ export interface X402Config {
   /** Receiving wallet address (payTo) — where settlements are sent */
   payTo: string;
 
-  /** ERC-20 token contract address for settlement (omit for native GOAT token) */
+  /** ERC-20 token contract address for settlement (omit for native BTC token) */
   settleToken?: string;
 
-  /** Decimals for the settle token (default: 18 for native GOAT, 6 for USDC, etc.) */
+  /** Decimals for the settle token (default: 18 for native BTC, 6 for USDC, etc.) */
   tokenDecimals: number;
 
   /** Request timeout in milliseconds (default: 30000) */
@@ -103,7 +105,6 @@ export function loadX402Config(env: NodeJS.ProcessEnv = process.env): X402Config
   const idempotencyKeyPrefix = env.GOAT_FLOW_X402_IDEMPOTENCY_KEY_PREFIX ?? 'finality_';
 
   // RPC URL is inherited from the main chain config
-  const { GOAT_NETWORKS, loadChainConfig } = require('./config.js');
   const chainCfg = loadChainConfig(env);
   const rpcUrl = chainCfg.rpcUrl ?? GOAT_NETWORKS['goat-testnet']?.rpcUrl;
 

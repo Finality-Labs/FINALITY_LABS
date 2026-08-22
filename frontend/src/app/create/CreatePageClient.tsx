@@ -353,7 +353,7 @@ const [switchError, setSwitchError] = React.useState<string | null>(null);
   }, [stopMatchPoll]);
 
 // Wallet & Identity
-const { account: wallet, isConnected, isConnecting, connect, chainId, switchChain } = useWallet();
+const { account: wallet, isConnected, isConnecting, connect, chainId, switchChain, error: walletError } = useWallet();
 const { config, primaryIdentity, hasAgent } = useAgentIdentity();
 const { config: agentConfig } = useAgentIdentity();
 const { useErc8004Agents } = useAgentMode();
@@ -585,6 +585,9 @@ React.useEffect(() => {
           </div>
           {switchError && (
             <p className="text-xs text-[#e03e3e] mt-1">Switch to GOAT failed: {switchError}</p>
+          )}
+          {walletError && (
+            <p className="text-xs text-[#e03e3e] mt-1">Wallet error: {walletError}</p>
           )}
         </CardContent>
       </Card>

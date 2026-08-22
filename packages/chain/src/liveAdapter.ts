@@ -38,6 +38,8 @@ export interface LiveAdapter {
     proofOfPayment: ProofOfPayment;
   }): Promise<{ txHash: string }>;
   getReputation(agentId: string): Promise<ReputationSummary>;
+  /** Resolve the wallet address registered for an ERC-8004 Agent ID. */
+  resolveAgentWallet(agentId: string): Promise<string>;
 }
 
 // ERC-721 Transfer(address,address,uint256) — topic0; tokenId is topic3 (indexed).
@@ -64,7 +66,7 @@ export async function createLiveAdapter(cfg: ChainConfig): Promise<LiveAdapter> 
     erc8004GiveFeedbackAction,
     erc8004GetReputationAction,
   } = await import("@goatnetwork/agentkit/plugins");
-  const { http, createPublicClient } = await import("viem");
+  const { http, createPublicClient, createWalletClient } = await import("viem");
 
   const net = GOAT_NETWORKS[cfg.network];
   const FINALITY_IDENTITY_REGISTRY = GOAT_TESTNET3_IDENTITY_REGISTRY.address;
@@ -76,7 +78,7 @@ export async function createLiveAdapter(cfg: ChainConfig): Promise<LiveAdapter> 
   const chain = {
     id: net.chainId,
     name: cfg.network,
-    nativeCurrency: { name: "GOAT", symbol: "GOAT", decimals: 18 },
+    nativeCurrency: { name: "Bitcoin", symbol: "BTC", decimals: 18 },
     rpcUrls: { default: { http: [cfg.rpcUrl as string] } },
   } as const;
 
@@ -88,6 +90,13 @@ export async function createLiveAdapter(cfg: ChainConfig): Promise<LiveAdapter> 
     cfg.network
   );
   const publicClient = createPublicClient({ chain: chain as any, transport: http(cfg.rpcUrl) });
+
+
+  const walletClient = createWalletClient({
+  account,
+  chain: chain as any,
+  transport: http(cfg.rpcUrl),
+});
 
   const ctx = () => ({ traceId: `finality-${Date.now()}`, network: cfg.network, now: Date.now() });
   const giveFeedback = erc8004GiveFeedbackAction(feedbackWallet as any);
@@ -139,13 +148,37 @@ export async function createLiveAdapter(cfg: ChainConfig): Promise<LiveAdapter> 
     },
 
     async settle(sellerWallet, amountUsd) {
-      if (cfg.settleToken) {
-        const amount = parseUnits(amountUsd.toString(), cfg.tokenDecimals).toString();
-        return wallet.transferErc20(cfg.settleToken, sellerWallet, amount);
-      }
-      const wei = parseUnits(amountUsd.toString(), 18).toString();
-      return wallet.transferNative(sellerWallet, wei);
-    },
+  if (cfg.settleToken) {
+    const amount = parseUnits(
+      amountUsd.toString(),
+      cfg.tokenDecimals
+    ).toString();
+
+    return wallet.transferErc20(
+      cfg.settleToken,
+      sellerWallet,
+      amount
+    );
+  }
+
+  const wei = parseUnits(amountUsd.toString(), 18);
+
+  const gas = await publicClient.estimateGas({
+    account: account.address,
+    to: sellerWallet as `0x${string}`,
+    value: wei,
+  });
+
+  const txHash = await walletClient.sendTransaction({
+  account,
+  chain: chain as any,
+  to: sellerWallet as `0x${string}`,
+  value: wei,
+  gas,
+});
+
+  return { txHash };
+},
 
     async giveFeedback(input) {
       const out = await giveFeedback.execute(ctx(), {
@@ -173,6 +206,19 @@ export async function createLiveAdapter(cfg: ChainConfig): Promise<LiveAdapter> 
         summaryValue: Number(out.summaryValue),
         summaryValueDecimals: out.summaryValueDecimals,
       };
+    },
+
+    async resolveAgentWallet(agentId) {
+      const REGISTRY_ABI = [
+        "function getAgentWallet(uint256 agentId) view returns (address)",
+      ];
+      const walletAddress = await publicClient.readContract({
+        address: FINALITY_IDENTITY_REGISTRY as `0x${string}`,
+        abi: REGISTRY_ABI,
+        functionName: "getAgentWallet",
+        args: [BigInt(agentId)],
+      });
+      return walletAddress as string;
     },
   };
 }

@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { createNegotiationClient, NegotiationClient } from '@/lib/ws'
 import { intakeApi, negotiateApi, chainApi } from '@/lib/api'
-import type { RoomSettlementRecord, ClosedDeal } from '@/types/api'
+import type { RoomSettlementRecord, ClosedDeal, PaymentVerificationRequest, PaymentVerificationResponse, DealPaymentInfo, PaymentState } from '@/types/api'
 import { useWallet, useCurrentAgent } from '@/hooks/use-wallet'
 import {
   Card,
@@ -95,6 +95,22 @@ interface RoomState {
   error: string | undefined;
 }
 
+interface PaymentReceipt {
+  verified: boolean;
+  paymentState: string;
+  txHash: string;
+  explorerUrl?: string;
+  amount: string;
+  token: string;
+  tokenSymbol: string;
+  buyer: string;
+  seller: string;
+  chainId: number;
+  network: string;
+  blockNumber?: string;
+  timestamp?: number;
+}
+
 // Fresh-room state. Spread everywhere (never mutate) so the shared object is
 // safe to use as the initial value for useState.
 const ROOM_STATE_INITIAL: RoomState = {
@@ -125,7 +141,7 @@ export default function NegotiationRoomPage() {
   
   const params = useParams();
   const searchParams = useSearchParams();
-  const { account: wallet, isConnecting, connect } = useWallet();
+  const { account: wallet, isConnecting, connect, signTypedData, chainId, transferErc20, transferNative } = useWallet();
   
   // Role is authoritative from the URL (`?role=buyer|seller`). It stays null
   // until the query param is available (useSearchParams is empty during the
@@ -194,7 +210,6 @@ export default function NegotiationRoomPage() {
   // by the EXISTING verification layer in the negotiate server when the real
   // `deal-closed` fires; we poll the read endpoint for the REAL result.
   const [verificationRecord, setVerificationRecord] = React.useState<RoomSettlementRecord | null>(null);
-  const verificationPolledRef = React.useRef(false);
 
   // Approval-workflow action forms (seller completion / buyer decision).
   const [showSellerForm, setShowSellerForm] = React.useState(false);
@@ -205,6 +220,15 @@ export default function NegotiationRoomPage() {
   const [buyerRejectionReason, setBuyerRejectionReason] = React.useState('');
   const [buyerNotes, setBuyerNotes] = React.useState('');
   const [actionSubmitting, setActionSubmitting] = React.useState(false);
+
+  // Direct on-chain ERC-20 payment flow state
+  const [paymentInfo, setPaymentInfo] = React.useState<DealPaymentInfo | null>(null);
+  const [paymentState, setPaymentState] = React.useState<PaymentState>('payment_pending');
+  const [paymentSubmitting, setPaymentSubmitting] = React.useState(false);
+  const [paymentTxHash, setPaymentTxHash] = React.useState<string | null>(null);
+  const [paymentError, setPaymentError] = React.useState<string | null>(null);
+  const [verificationResult, setVerificationResult] = React.useState<PaymentVerificationResponse | null>(null);
+  const [paymentReceipt, setPaymentReceipt] = React.useState<PaymentReceipt | null>(null);
 
   // Auto-scroll to bottom
   const scrollToBottom = useCallback(() => {
@@ -368,18 +392,41 @@ export default function NegotiationRoomPage() {
 
   // Once the deal closes the EXISTING verification layer runs in the negotiate
   // server. Poll the real read endpoint until the record (with its real
-  // verdicts) is available, then show it.
+  // verdicts) is available, then CONTINUE polling until a truly final
+  // verification status is reached. A "rejected" status is NOT final if any
+  // verifier indicates it's actionable (metadata.requiresAction), meaning the
+  // workflow is waiting for seller completion or buyer approval. Only stop
+  // polling when: verified, disputed, error, OR rejected with no actionable
+  // verdicts (truly final rejection). This ensures both buyer and seller
+  // converge to the same final state as the approval workflow progresses.
   useEffect(() => {
-    if (!roomId || roomState.status !== 'closed' || !roomState.deal || verificationPolledRef.current) return;
-    verificationPolledRef.current = true;
+    if (!roomId || roomState.status !== 'closed' || !roomState.deal) return;
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     let attempts = 0;
+    const MAX_ATTEMPTS = 180; // ~6 minutes max (2s intervals)
+
+    const hasActionableVerdict = (verdicts: Array<{ metadata?: Record<string, unknown> }>) =>
+      verdicts.some((v) => v.metadata?.requiresAction);
+
+    const isTrulyFinal = (record: { verification?: { status: string; verdicts?: Array<{ metadata?: Record<string, unknown> }> } }) => {
+      const status = record.verification?.status;
+      if (status === 'verified' || status === 'disputed' || status === 'error') return true;
+      if (status === 'rejected') {
+        // Rejected is only truly final if NO verifier indicates an action is required
+        const verdicts = record.verification?.verdicts ?? [];
+        return !hasActionableVerdict(verdicts);
+      }
+      return false;
+    };
 
     const poll = async () => {
       if (cancelled) return;
-      if (attempts >= 30) return; // give up after ~30s; server state is in-memory
+      if (attempts >= MAX_ATTEMPTS) {
+        console.warn('[poll] Max verification polling attempts reached');
+        return;
+      }
       attempts += 1;
       try {
         const record = await negotiateApi.getSettlement(roomId);
@@ -387,9 +434,13 @@ export default function NegotiationRoomPage() {
         if (record?.verification) {
           setVerificationRecord(record);
           persistSettlement(record);
-          return;
+          // Continue polling until truly final status
+          if (!isTrulyFinal(record)) {
+            timer = setTimeout(poll, 2000);
+          }
+        } else {
+          timer = setTimeout(poll, 1000);
         }
-        timer = setTimeout(poll, 1000);
       } catch {
         if (!cancelled) timer = setTimeout(poll, 1000);
       }
@@ -544,14 +595,128 @@ console.log("price =", counterofferPrice);
     }
   };
 
-  // Proceed to Payment — the gateway to the NEXT milestone. No payment logic
-  // here yet; the verified deal + its real verification record are already
-  // retained in sessionStorage for the payment task to consume.
-  const handleProceedToPayment = () => {
-    if (!verificationRecord) return;
-    toast.info('Payment is the next milestone', {
-      description: 'The verified deal is retained for the payment task — wire settlement here next.',
-    });
+// Proceed to Payment — fetch payment info and initiate on-chain payment (native or ERC-20)
+  const handleProceedToPayment = async () => {
+    console.log('[PAYMENT FLOW] Proceed clicked', { roomId, role, wallet });
+    if (!verificationRecord || !roomState.deal || !wallet) return;
+    if (role !== 'buyer') {
+      toast.error('Only the buyer can initiate payment');
+      return;
+    }
+
+    // Prevent double-submission
+    if (paymentSubmitting) {
+      console.log('[PAYMENT FLOW] Already submitting, ignoring duplicate click');
+      return;
+    }
+
+    setPaymentSubmitting(true);
+    setPaymentError(null);
+    setPaymentState('payment_submitted');
+    setPaymentTxHash(null);
+    setVerificationResult(null);
+
+    try {
+      // Fetch payment info from backend (token, amount, recipient, etc.)
+      const info = await chainApi.getDealPaymentInfo(roomId);
+      console.log('[PAYMENT FLOW] Payment info received', { 
+        isNative: info.isNative, 
+        tokenSymbol: info.tokenSymbol, 
+        amount: info.amount, 
+        sellerAddress: info.sellerAddress,
+        chainId: info.chainId,
+      });
+      setPaymentInfo(info);
+
+      // Use amount from payment info (already converted to base units by backend)
+      const amountInBaseUnits = info.amount ?? Math.round(info.totalUsdc * Math.pow(10, info.tokenDecimals)).toString();
+
+      const isNative = info.isNative ?? (info.tokenAddress === 'native' || !info.tokenAddress || info.tokenAddress === '0x0000000000000000000000000000000000000000');
+      const tokenLabel = isNative ? 'TBTC (native)' : `${info.tokenSymbol} (ERC-20)`;
+
+      toast.info('Initiating payment...', {
+        description: `Preparing to transfer ${info.totalUsdc} ${info.tokenSymbol} (${amountInBaseUnits} base units) to ${truncate(info.sellerAddress, 10)} via ${tokenLabel}`,
+      });
+
+      let txHash: string;
+      if (isNative) {
+        // Execute native GOAT transfer via connected buyer wallet
+        txHash = await transferNative(info.sellerAddress, amountInBaseUnits);
+      } else {
+        // Execute REAL ERC-20 transfer via connected buyer wallet
+        txHash = await transferErc20(info.tokenAddress, info.sellerAddress, amountInBaseUnits);
+      }
+      
+      setPaymentTxHash(txHash);
+      setPaymentState('payment_confirming');
+      toast.success('Transaction submitted', { description: `Tx: ${truncate(txHash, 12)} — confirming on-chain...` });
+
+      // Verify payment on-chain via backend
+      console.log('[PAYMENT_RUNTIME_VERIFY]', { txHash, roomId });
+      const verification = await chainApi.verifyPayment(roomId, { txHash });
+      console.log('[PAYMENT_RUNTIME_VERIFY_RESULT]', { 
+        status: verification.verified ? 'success' : 'failed',
+        verified: verification.verified, 
+        ok: verification.ok, 
+        paymentState: verification.paymentState,
+        error: verification.error,
+      });
+      setVerificationResult(verification);
+      
+      if (verification.verified === true) {
+        // Create payment receipt from verified response
+        const receipt: PaymentReceipt = {
+          verified: verification.verified,
+          paymentState: verification.paymentState,
+          txHash: verification.txHash,
+          explorerUrl: verification.explorerUrl,
+          amount: verification.amount,
+          token: verification.token,
+          tokenSymbol: verification.tokenSymbol,
+          buyer: verification.buyer,
+          seller: verification.seller,
+          chainId: verification.chainId,
+          network: verification.network,
+          blockNumber: undefined, // Backend doesn't return block number currently
+          timestamp: Date.now(),
+        };
+        setPaymentReceipt(receipt);
+        console.log('[handleProceedToPayment] Payment receipt created:', receipt);
+        
+        setPaymentState('payment_verified');
+        toast.success('Payment verified on-chain', { description: `${verification.amount} ${verification.tokenSymbol} transferred successfully` });
+      } else {
+        setPaymentState('payment_failed');
+        setPaymentError(verification.error || 'Payment verification failed');
+        toast.error('Payment verification failed', { description: verification.error || 'Unknown error' });
+      }
+    } catch (error) {
+      const err = error as Error & { code?: number; data?: unknown };
+      console.error('[handleProceedToPayment] CATCH BLOCK - Payment error:', {
+        message: err.message,
+        code: err.code,
+        data: err.data,
+        stack: err.stack,
+        name: err.name,
+      });
+      
+      // Wallet rejection (4001) is NOT a payment failure - user cancelled
+      if (err.code === 4001) {
+        console.log('[handleProceedToPayment] User cancelled transaction, returning to awaiting signature');
+        setPaymentState('payment_submitted'); // Allow retry
+        setPaymentError('Transaction cancelled. Click Pay to retry.');
+        toast.info('Transaction cancelled', { description: 'Click Pay to try again.' });
+      } else {
+        const message = err.message || 'Payment failed';
+        const details = err.code !== undefined ? ` (code: ${err.code})` : '';
+        const fullMessage = `${message}${details}`;
+        setPaymentError(fullMessage);
+        setPaymentState('payment_failed');
+        toast.error('Payment failed', { description: fullMessage });
+      }
+    } finally {
+      setPaymentSubmitting(false);
+    }
   };
 
   // Re-fetch the live settlement record after a verification action so the
@@ -908,18 +1073,176 @@ console.log(
 
             {/* Result */}
             {resultPhase === 'verified' && (
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-[#3fb950]/10 border border-[#3fb950]/40 rounded">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="h-5 w-5 text-[#3fb950]" />
-                  <div>
-                    <p className="font-medium text-[#3fb950]">Verification passed</p>
-                    <p className="text-xs text-[#5d5d5d]">All real verifiers approved the deal — settlement is unblocked.</p>
+              <div className="space-y-4">
+                {/* Payment Info & Submitted - show payment details and status */}
+                {paymentInfo && (
+                  <div className="p-4 bg-[#f5a623]/10 border border-[#f5a623]/40 rounded space-y-4">
+                    <div className="flex items-center gap-2">
+                      <CreditCard className="h-5 w-5 text-[#f5a623]" />
+                      <p className="font-medium text-[#f5a623]">On-Chain Payment</p>
+                    </div>
+                    <p className="text-sm text-[#5d5d5d]">
+                      {paymentInfo.isNative
+                        ? 'Direct native TBTC transfer on GOAT Testnet3 (chainId 48816). No merchant API required.'
+                        : 'Direct ERC-20 GOAT token transfer on GOAT Testnet3 (chainId 48816). No merchant API required.'}
+                    </p>
+                    
+                    {/* Payment Details */}
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3 p-3 bg-black/20 rounded">
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Amount</p>
+                        <p className="font-mono font-medium">{paymentInfo.totalUsdc} {paymentInfo.tokenSymbol}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Token</p>
+                        <p className="font-mono text-sm">{paymentInfo.tokenSymbol} ({truncate(paymentInfo.tokenAddress, 10)})</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Recipient</p>
+                        <p className="font-mono text-sm break-all">{truncate(paymentInfo.sellerAddress, 16)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Buyer</p>
+                        <p className="font-mono text-sm break-all">{truncate(paymentInfo.buyerAddress, 16)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Network</p>
+                        <p className="font-medium">GOAT Testnet3 (Chain ID: {paymentInfo.chainId})</p>
+                      </div>
+                    </div>
+
+                    {/* Network check */}
+                    <div className="p-3 bg-black/20 rounded">
+                      <p className="text-xs text-[#5d5d5d]">Wallet Network: <span className="font-mono">
+                        {wallet && chainId === 48816 ? 'GOAT Testnet3 ✓' : chainId ? `Chain ID ${chainId} — Will auto-switch` : 'Not connected'}
+                      </span></p>
+                    </div>
+
+                    {/* Payment status progression */}
+                    <div className="space-y-2 p-3 bg-black/20 rounded">
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className={`w-2 h-2 rounded-full ${paymentState !== 'payment_pending' ? 'bg-[#3fb950]' : 'bg-[#5d5d5d]'}`} />
+                        <span className={paymentState !== 'payment_pending' ? 'text-[#3fb950]' : 'text-[#5d5d5d]'}>, Initiated</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className={`w-2 h-2 rounded-full ${['payment_submitted', 'payment_confirming', 'payment_verified'].includes(paymentState) ? 'bg-[#3fb950]' : 'bg-[#5d5d5d]'}`} />
+                        <span className={['payment_submitted', 'payment_confirming', 'payment_verified'].includes(paymentState) ? 'text-[#3fb950]' : 'text-[#5d5d5d]'}>{paymentState === 'payment_submitted' ? 'Awaiting signature' : 'Submitted to wallet'}</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className={`w-2 h-2 rounded-full ${['payment_confirming', 'payment_verified'].includes(paymentState) ? 'bg-[#3fb950]' : 'bg-[#5d5d5d]'}`} />
+                        <span className={['payment_confirming', 'payment_verified'].includes(paymentState) ? 'text-[#3fb950]' : 'text-[#5d5d5d]'}>, Confirming on-chain</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className={`w-2 h-2 rounded-full ${paymentState === 'payment_verified' ? 'bg-[#3fb950]' : 'bg-[#5d5d5d]'}`} />
+                        <span className={paymentState === 'payment_verified' ? 'text-[#3fb950]' : 'text-[#5d5d5d]'}>, Verified</span>
+                      </div>
+                    </div>
+
+                    {/* Error display */}
+                    {paymentError && paymentState === 'payment_failed' && (
+                      <p className="text-sm text-[#e03e3e]">{paymentError}</p>
+                    )}
                   </div>
-                </div>
-                <Button onClick={handleProceedToPayment} className="w-full sm:w-auto">
-                  <CreditCard className="h-4 w-4 mr-2" />
-                  Proceed to Payment
-                </Button>
+                )}
+
+                {/* Payment Receipt - shown after successful verification */}
+                {paymentReceipt && (
+                  <div className="p-4 bg-[#3fb950]/10 border border-[#3fb950]/40 rounded space-y-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle className="h-5 w-5 text-[#3fb950]" />
+                        <p className="font-medium text-[#3fb950]">PAYMENT RECEIPT</p>
+                      </div>
+                      <span className="px-2 py-1 bg-[#3fb950]/20 text-[#3fb950] text-xs font-mono rounded">VERIFIED ✓</span>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 bg-black/20 rounded">
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Transaction Hash</p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-mono text-xs break-all">{paymentReceipt.txHash}</p>
+                          <button
+                            onClick={() => navigator.clipboard.writeText(paymentReceipt.txHash)}
+                            className="px-2 py-1 text-xs bg-[#5d5d5d]/50 hover:bg-[#5d5d5d] rounded border border-[#5d5d5d]/30 transition-colors"
+                            title="Copy TX Hash"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Amount</p>
+                        <p className="font-mono">
+                          {(Number(BigInt(paymentReceipt.amount) / BigInt(1e18))).toFixed(6)} {paymentReceipt.tokenSymbol}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Token</p>
+                        <p className="font-mono text-xs">{paymentReceipt.tokenSymbol} ({paymentReceipt.token === 'native' ? 'native' : truncate(paymentReceipt.token, 10)})</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Network</p>
+                        <p className="font-medium">{paymentReceipt.network} (Chain ID: {paymentReceipt.chainId})</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Buyer</p>
+                        <p className="font-mono text-xs break-all">{truncate(paymentReceipt.buyer, 16)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Seller</p>
+                        <p className="font-mono text-xs break-all">{truncate(paymentReceipt.seller, 16)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Status</p>
+                        <p className="font-mono text-xs text-[#3fb950]">{paymentReceipt.paymentState}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-[#5d5d5d]">Timestamp</p>
+                        <p className="font-mono text-xs">
+                          {paymentReceipt.timestamp ? new Date(paymentReceipt.timestamp).toLocaleString() : 'N/A'}
+                        </p>
+                      </div>
+                    </div>
+                    
+                    {paymentReceipt.explorerUrl && (
+                      <a href={paymentReceipt.explorerUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-[#3fb950] hover:underline inline-flex items-center gap-1">
+                        <ExternalLink className="h-3 w-3" />
+                        View transaction on explorer
+                      </a>
+                    )}
+                  </div>
+                )}
+
+                {/* Payment Failed Result */}
+                {verificationResult && !verificationResult.verified && (
+                  <div className="p-4 bg-[#e03e3e]/10 border border-[#e03e3e]/40 rounded space-y-2">
+                    <div className="flex items-center gap-2">
+                      <XCircle className="h-5 w-5 text-[#e03e3e]" />
+                      <p className="font-medium text-[#e03e3e]">Payment Verification Failed</p>
+                    </div>
+                    <p className="text-sm text-[#e03e3e]">{verificationResult.error || 'Unknown verification error'}</p>
+                    {verificationResult.details && (
+                      <p className="text-xs text-[#5d5d5d] font-mono">{verificationResult.details}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Initial Proceed to Payment Button */}
+                {!paymentInfo && !verificationResult && (
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-[#3fb950]/10 border border-[#3fb950]/40 rounded">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="h-5 w-5 text-[#3fb950]" />
+                      <div>
+                        <p className="font-medium text-[#3fb950]">Verification passed</p>
+                        <p className="text-xs text-[#5d5d5d]">All real verifiers approved the deal — settlement is unblocked.</p>
+                      </div>
+                    </div>
+                    <Button onClick={handleProceedToPayment} loading={paymentSubmitting} className="w-full sm:w-auto">
+                      <CreditCard className="h-4 w-4 mr-2" />
+                      Proceed to Payment
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -945,7 +1268,7 @@ console.log(
                 {/* Approval-workflow actions — the seller/buyer submit their
                     part and the server re-verifies; the card then refreshes
                     with the real re-run result. */}
-                {role === 'seller' && requiresSellerCompletion && !verification.passed && (
+                {role === 'seller' && verification && requiresSellerCompletion && !verification.passed && (
                   <div className="space-y-3 border-t border-[#e03e3e]/30 pt-3">
                     {!showSellerForm ? (
                       <Button
@@ -996,7 +1319,7 @@ console.log(
                   </div>
                 )}
 
-                {role === 'buyer' && requiresBuyerDecision && !verification.passed && (
+                {role === 'buyer' && verification && requiresBuyerDecision && !verification.passed && (
                   <div className="space-y-3 border-t border-[#e03e3e]/30 pt-3">
                     {!showBuyerForm ? (
                       <div className="flex gap-2">

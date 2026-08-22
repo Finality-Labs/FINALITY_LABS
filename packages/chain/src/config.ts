@@ -20,7 +20,7 @@
  *   GOAT_FLOW_X402_API_KEY         Merchant API key from GOAT Flow dashboard
  *   GOAT_FLOW_X402_API_SECRET      Merchant API secret from GOAT Flow dashboard
  *   GOAT_FLOW_X402_PAY_TO          Receiving wallet address (payTo) for settlements
- *   GOAT_FLOW_X402_SETTLE_TOKEN    ERC-20 token contract address (optional; omit for native GOAT)
+ *   GOAT_FLOW_X402_SETTLE_TOKEN    ERC-20 token contract address (optional; omit for native TBTC)
  *   GOAT_FLOW_X402_TOKEN_DECIMALS  Decimals for settle token (default: 18)
  *   GOAT_FLOW_X402_TIMEOUT_MS      Request timeout in milliseconds (default: 30000)
  *   GOAT_FLOW_X402_IDEMPOTENCY_KEY_PREFIX  Prefix for idempotency keys (default: "finality_")

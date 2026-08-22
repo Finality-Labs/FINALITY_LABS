@@ -242,6 +242,42 @@ export function createMockSettlementRecord(
 }
 
 /**
+ * Create a settlement record for direct ERC-20 payment (buyer → seller on-chain)
+ */
+export function createDirectSettlementRecord(
+  deal: Deal,
+  txHash: string,
+  explorerUrl: string,
+  tokenSymbol: string
+): SettlementRecord {
+  const now = Date.now();
+  const id = generateSettlementId();
+
+  return {
+    id,
+    paymentId: `direct_${deal.roomId}_${now}`,
+    dealId: deal.roomId,
+    roomId: deal.roomId,
+    transcriptHash: deal.transcriptHash,
+    mode: 'live', // Direct on-chain payment is live mode
+    status: 'settled',
+    paymentStatus: 'settled',
+    txHash,
+    explorerUrl,
+    payerWallet: deal.buyer.wallet,
+    payToWallet: deal.seller.wallet,
+    token: tokenSymbol,
+    tokenAddress: undefined, // Will be set from config if needed
+    tokenDecimals: 18,
+    chainId: 48816,
+    network: 'goat-testnet',
+    createdAt: now,
+    updatedAt: now,
+    settledAt: now,
+  };
+}
+
+/**
  * Update an existing settlement record with new status
  */
 export function updateSettlementStatus(

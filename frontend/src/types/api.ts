@@ -278,15 +278,108 @@ export interface Deal {
   totalUsdc: number;
 }
 
+/** x402 Payment Challenge — returned as HTTP 402 when payment requires buyer authorization. */
+export interface X402PaymentChallenge {
+  paymentId: string;
+  amount: string;
+  token: string;
+  tokenSymbol: string;
+  tokenDecimals: number;
+  recipient: string;
+  chainId: number;
+  network: string;
+  dealId: string;
+  calldataSignRequest: {
+    domain: Record<string, unknown>;
+    types: Record<string, { name: string; type: string }[]>;
+    primaryType: string;
+    message: Record<string, unknown>;
+  };
+  expiresAt: string;
+}
+
 export interface DealResponse {
   ok: boolean;
-  mode: 'mock' | 'live';
+  mode: 'mock' | 'live' | 'x402';
   txHash: string;
   explorerUrl?: string;
   reputation: {
     buyer: { agentId: string } & ReputationResult;
     seller: { agentId: string } & ReputationResult;
   };
+  x402Challenge?: X402PaymentChallenge;
+}
+
+/** Authorization request for x402 payment (buyer signature submission). */
+export interface X402AuthorizeRequest {
+  paymentId: string;
+  signature: string;
+  calldataSignRequest?: {
+    domain: Record<string, unknown>;
+    types: Record<string, { name: string; type: string }[]>;
+    primaryType: string;
+    message: Record<string, unknown>;
+  };
+}
+
+/** Authorization response for x402 payment. */
+export interface X402AuthorizeResponse {
+  ok: boolean;
+  mode: 'x402';
+  txHash: string;
+  explorerUrl?: string;
+  paymentId: string;
+  status: 'created' | 'authorized' | 'settled' | 'failed' | 'expired';
+  error?: string;
+}
+
+/** Payment states for the on-chain ERC-20 payment flow */
+export type PaymentState = 
+  | 'payment_pending'
+  | 'payment_submitted'
+  | 'payment_confirming'
+  | 'payment_verified'
+  | 'payment_failed';
+
+/** On-chain ERC-20 payment verification request */
+export interface PaymentVerificationRequest {
+  txHash: string;
+}
+
+/** On-chain ERC-20 payment verification response */
+export interface PaymentVerificationResponse {
+  ok: boolean;
+  verified: boolean;
+  paymentState: PaymentState;
+  txHash: string;
+  explorerUrl?: string;
+  amount: string;
+  token: string;
+  tokenSymbol: string;
+  buyer: string;
+  seller: string;
+  chainId: number;
+  network: string;
+  error?: string;
+  details?: string;
+}
+
+/** Payment info needed to execute the payment (native or ERC-20) */
+export interface DealPaymentInfo {
+  roomId: string;
+  dealId: string;
+  totalUsdc: number;
+  amount: string; // amount in base units (wei for native, smallest unit for ERC-20)
+  tokenAddress: string; // token contract address, or "native" for native token
+  tokenSymbol: string;
+  tokenDecimals: number;
+  isNative: boolean; // true for native token transfer, false for ERC-20
+  sellerAddress: string;
+  buyerAddress: string;
+  chainId: number;
+  network: string;
+  rpcUrl: string;
+  explorerBaseUrl: string;
 }
 
 export interface ReputationResult {

@@ -16,6 +16,19 @@ export interface BuildAppOptions {
 
 export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
+
+  // Add response hook to debug all responses
+  app.addHook('onSend', async (request, reply, payload) => {
+    console.log('[Fastify onSend] Response sent:', {
+      url: request.url,
+      method: request.method,
+      statusCode: reply.statusCode,
+      contentType: reply.getHeader('content-type'),
+      payloadLength: typeof payload === 'string' ? payload.length : Buffer.byteLength(payload as string)
+    });
+    return payload;
+  });
+
   await app.register(cors);
 
   app.get('/health', async () => ({ ok: true }));

@@ -218,7 +218,7 @@ export function IntentResultPanel({ flow, onStopSearch }: IntentResultPanelProps
       )}
 
       {/* Actions */}
-      {flow.status === 'matched' && (
+      {flow.status === 'matched' && match && flow.roomId && (
         <div className="flex flex-col sm:flex-row gap-2 p-4 bg-[#3fb950]/10 border-t border-[#3fb950]/40">
           <Link href={`/negotiations/${flow.roomId}?role=buyer&resource=${encodeURIComponent(match.resource)}`} className="sm:flex-1">
             <Button className="w-full">

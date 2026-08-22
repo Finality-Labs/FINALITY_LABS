@@ -109,7 +109,7 @@ export interface X402SettlementError extends Error {
 export class X402Adapter {
   private readonly config: X402Config;
   private readonly merchant: MerchantGatewayAdapter;
-  private readonly payer: PayerWalletAdapter | null;
+  private readonly payer: PayerWalletAdapter;
   private readonly viemWallet: WalletProvider | null;
 
   constructor(config?: X402Config, signerPrivateKey?: string) {
@@ -143,7 +143,7 @@ export class X402Adapter {
     return {
       id: this.config.chainId,
       name: this.config.network,
-      nativeCurrency: { name: 'GOAT', symbol: 'GOAT', decimals: 18 },
+      nativeCurrency: { name: 'Bitcoin', symbol: 'BTC', decimals: 18 },
       rpcUrls: { default: { http: [this.config.rpcUrl] } },
     } as const;
   }
@@ -159,7 +159,7 @@ export class X402Adapter {
   }
 
   /** Get the EIP-712 calldata sign request for the buyer to sign. */
-  async createPaymentIntent(deal: Deal): Promise<{
+  async createPaymentIntent(deal: Deal, sellerWallet?: string): Promise<{
     paymentId: string;
     calldataSignRequest?: CalldataSignRequest;
     requiresSignature: boolean;
@@ -169,8 +169,10 @@ export class X402Adapter {
     const amountWei = this.usdToWei(deal.totalUsdc, this.config.tokenDecimals);
     const idempotencyKey = `${this.config.idempotencyKeyPrefix}${deal.roomId}_${Date.now()}`;
 
+    const payTo = sellerWallet ?? this.config.payTo;
+
     const input: CreatePaymentIntentInput = {
-      to: this.config.payTo,
+      to: payTo,
       asset: assetSymbol,
       amount: amountWei.toString(),
       fromAddress: deal.buyer.wallet,
@@ -196,10 +198,8 @@ export class X402Adapter {
     paymentId: string;
     status: 'authorized' | 'failed';
   }> {
-    if (!this.payer) {
-      throw new Error('No payer wallet available for signature submission');
-    }
-
+    // Allow authorization with pre-signed signature (from buyer's wallet) even without a payer
+    // The payer is only needed for server-side signing, not for submitting a pre-existing signature
     const submitAction = submitSignatureAction(this.merchant, this.payer);
     const result = await submitAction.execute(
       { traceId: `finality-${Date.now()}`, network: this.config.network, now: Date.now() },
@@ -216,6 +216,7 @@ export class X402Adapter {
   async getPaymentStatus(paymentId: string): Promise<{
     paymentId: string;
     status: 'created' | 'authorized' | 'settled' | 'failed' | 'expired';
+    raw?: unknown;
   }> {
     const statusAction = paymentStatusAction(this.merchant);
     const result = await statusAction.execute(
@@ -232,6 +233,7 @@ export class X402Adapter {
   ): Promise<{
     paymentId: string;
     status: 'created' | 'authorized' | 'settled' | 'failed' | 'expired';
+    raw?: unknown;
   }> {
     const intervalMs = options.intervalMs ?? 2000;
     const maxAttempts = options.maxAttempts ?? 60;
@@ -270,7 +272,8 @@ export class X402Adapter {
   /** Full settlement flow: create → authorize (with signature) → poll → return result. */
   async settle(
     input: Deal | { paymentId: string; signature: string },
-    buyerSignature?: string
+    buyerSignature?: string,
+    sellerWallet?: string
   ): Promise<X402SettlementResult> {
     // Handle authorize endpoint call (paymentId + signature only)
     if (!('totalUsdc' in input)) {
@@ -301,7 +304,7 @@ export class X402Adapter {
     // Full deal settlement flow
     const deal = input;
     // Step 1: Create payment intent
-    const { paymentId, calldataSignRequest, requiresSignature } = await this.createPaymentIntent(deal);
+    const { paymentId, calldataSignRequest, requiresSignature } = await this.createPaymentIntent(deal, sellerWallet);
 
     // Step 2: Authorize with buyer signature if required
     if (requiresSignature) {
@@ -402,6 +405,54 @@ export class X402Adapter {
   /** Build explorer URL for transaction. */
   private buildExplorerUrl(txHash: string): string {
     return `https://explorer.testnet3.goat.network/tx/${txHash}`;
+  }
+
+  /** Public accessor for mock txHash generation (used by authorize endpoint). */
+  static generateMockTxHash(paymentId: string): string {
+    const { keccak256, toHex } = require('viem');
+    return keccak256(toHex(JSON.stringify({ paymentId, mock: true, ts: Date.now() })));
+  }
+
+  /** Public accessor for explorer URL generation. */
+  static buildExplorerUrl(txHash: string): string {
+    return `https://explorer.testnet3.goat.network/tx/${txHash}`;
+  }
+
+  /** Extract on-chain txHash from GOAT Flow API raw response. */
+  static extractTxHashFromRaw(raw: unknown): string | null {
+    if (!raw || typeof raw !== 'object') return null;
+
+    const obj = raw as Record<string, unknown>;
+
+    const getStr = (o: unknown, ...keys: string[]): string | undefined => {
+      let current: unknown = o;
+      for (const key of keys) {
+        if (current && typeof current === 'object' && key in current) {
+          current = (current as Record<string, unknown>)[key];
+        } else {
+          return undefined;
+        }
+      }
+      return typeof current === 'string' ? current : undefined;
+    };
+
+    const candidates = [
+      getStr(obj, 'txHash'),
+      getStr(obj, 'transactionHash'),
+      getStr(obj, 'tx_hash'),
+      getStr(obj, 'hash'),
+      getStr(obj, 'receipt', 'transactionHash'),
+      getStr(obj, 'data', 'txHash'),
+      getStr(obj, 'data', 'transactionHash'),
+    ];
+
+    for (const candidate of candidates) {
+      if (candidate && /^0x[a-fA-F0-9]{64}$/.test(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
   }
 }
 

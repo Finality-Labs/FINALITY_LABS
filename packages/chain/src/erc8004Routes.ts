@@ -121,7 +121,7 @@ export async function handleDiscoverAgentsByWallet(
     chain: {
       id: net.chainId,
       name: cfg.network,
-      nativeCurrency: { name: 'GOAT', symbol: 'GOAT', decimals: 18 },
+      nativeCurrency: { name: 'Bitcoin', symbol: 'BTC', decimals: 18 },
       rpcUrls: { default: { http: [rpcUrl] } },
     },
     transport: http(rpcUrl),

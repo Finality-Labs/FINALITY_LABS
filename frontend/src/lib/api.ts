@@ -38,6 +38,11 @@ import {
   type BuyerDecisionSubmission,
   type AdminOverrideSubmission,
   type RoomSettlementRecord,
+  type X402AuthorizeRequest,
+  type X402AuthorizeResponse,
+  type PaymentVerificationRequest,
+  type PaymentVerificationResponse,
+  type DealPaymentInfo,
 } from '@/types/api';
 
 class ApiClient {
@@ -154,11 +159,127 @@ class ApiClient {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(deal),
     });
+    const data = await res.json().catch(() => ({ error: 'Failed to settle deal' }));
     if (!res.ok) {
-      const error = await res.json().catch(() => ({ error: 'Failed to settle deal' }));
-      throw new Error(error.error || error.reason || `HTTP ${res.status}`);
+      // For HTTP 402, return the challenge instead of throwing
+      if (res.status === 402 && data.x402Challenge) {
+        return data as DealResponse;
+      }
+      throw new Error(data.error || data.reason || `HTTP ${res.status}`);
     }
-    return res.json();
+    return data;
+  }
+
+  async authorizeX402Payment(roomId: string, request: X402AuthorizeRequest): Promise<X402AuthorizeResponse> {
+    const res = await fetch(`${this.config.chainBaseUrl}/deals/${encodeURIComponent(roomId)}/authorize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    const data = await res.json().catch(() => ({ error: 'Failed to authorize payment' }));
+    if (!res.ok) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  async verifyPayment(roomId: string, request: PaymentVerificationRequest): Promise<PaymentVerificationResponse> {
+    const url = `${this.config.chainBaseUrl}/deals/${encodeURIComponent(roomId)}/payment/verify`;
+    console.log('[api.verifyPayment] Request:', { url, txHash: request.txHash });
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 180_000); // 3 min timeout (backend waits up to 60s for receipt)
+    
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+        signal: controller.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeoutId);
+      const err = fetchErr as Error;
+      console.error('[api.verifyPayment] Fetch failed:', { 
+        name: err.name, 
+        message: err.message, 
+        cause: err.cause 
+      });
+      if (err.name === 'AbortError') {
+        throw new Error('Payment verification timed out. The transaction may still be confirming on-chain.');
+      }
+      throw new Error(`Network error: ${err.message}`);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    console.log('[api.verifyPayment] HTTP status:', res.status, res.ok);
+    console.log('[api.verifyPayment] content-type:', res.headers.get('content-type'));
+    console.log('[api.verifyPayment] all headers:', Object.fromEntries(res.headers.entries()));
+
+    const rawBody = await res.text();
+    console.log('[api.verifyPayment] ACTUAL HTTP RESPONSE', {
+      status: res.status,
+      contentType: res.headers.get('content-type'),
+      bodyLength: rawBody.length,
+      body: rawBody
+    });
+
+    if (!rawBody.trim()) {
+      console.error('[api.verifyPayment] Empty response body received');
+      const errorResponse: PaymentVerificationResponse = { 
+        ok: false, verified: false, paymentState: 'payment_failed', 
+        txHash: request.txHash, amount: '', token: '', tokenSymbol: '', 
+        buyer: '', seller: '', chainId: 48816, network: 'goat-testnet',
+        error: 'verifyPayment returned HTTP 200 with empty body' 
+      };
+      throw new Error('verifyPayment returned HTTP 200 with empty body');
+    }
+
+    let data: PaymentVerificationResponse;
+    try {
+      data = JSON.parse(rawBody) as PaymentVerificationResponse;
+    } catch (e) {
+      console.error('[api.verifyPayment] JSON parse failed:', e, 'Raw:', rawBody);
+      const errorResponse: PaymentVerificationResponse = { 
+        ok: false, verified: false, paymentState: 'payment_failed', 
+        txHash: request.txHash, amount: '', token: '', tokenSymbol: '', 
+        buyer: '', seller: '', chainId: 48816, network: 'goat-testnet',
+        error: 'Failed to parse payment verification response', 
+        details: (e as Error).message 
+      };
+      throw new Error('Failed to parse payment verification response');
+    }
+    
+    console.log('[api.verifyPayment] Parsed response:', { 
+      verified: data.verified, 
+      ok: data.ok, 
+      paymentState: data.paymentState,
+      txHash: data.txHash,
+      amount: data.amount,
+      tokenSymbol: data.tokenSymbol,
+      error: data.error
+    });
+
+    if (!res.ok) {
+      console.error('[api.verifyPayment] HTTP error:', { status: res.status, data });
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    
+    return data;
+  }
+
+  async getDealPaymentInfo(roomId: string): Promise<DealPaymentInfo> {
+    const res = await fetch(`${this.config.chainBaseUrl}/deals/${encodeURIComponent(roomId)}/payment/info`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json().catch(() => ({ error: 'Failed to get payment info' }));
+    if (!res.ok) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return data;
   }
 
   async getChainMode(): Promise<ChainModeResponse> {
@@ -390,6 +511,9 @@ export const intakeApi = {
 
 export const chainApi = {
   settleDeal: (deal: Deal) => apiClient.settleDeal(deal),
+  authorizeX402Payment: (roomId: string, request: X402AuthorizeRequest) => apiClient.authorizeX402Payment(roomId, request),
+  verifyPayment: (roomId: string, request: PaymentVerificationRequest) => apiClient.verifyPayment(roomId, request),
+  getDealPaymentInfo: (roomId: string) => apiClient.getDealPaymentInfo(roomId),
   getChainMode: () => apiClient.getChainMode(),
   healthCheck: () => apiClient.healthCheck(),
   // ERC-8004 Agent Registration

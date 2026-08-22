@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { buildApp } from '../app.js';
 import type { FastifyInstance } from 'fastify';
 import { facilitator } from '../mockFacilitator.js';
 import { reputation } from '../reputation.js';
+import { X402Adapter } from '../x402Adapter.js';
 
 const validDeal = {
   roomId: 'room_abc',
@@ -98,5 +99,50 @@ describe('POST /deals (integration)', () => {
     const res = await app.inject({ method: 'GET', url: '/health' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
+  });
+});
+
+describe('x402 payment challenge (HTTP 402)', () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    // Reset shared singletons between tests.
+    // @ts-expect-error access private for test reset
+    facilitator.ledger = [];
+    // @ts-expect-error access private for test reset
+    reputation.feedback = new Map();
+    app = await buildApp();
+    await app.ready();
+  });
+
+  it('returns 400 for invalid authorize request (missing paymentId)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/deals/room_abc/authorize',
+      payload: { signature: '0xsig' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().ok).toBe(false);
+  });
+
+  it('returns 400 for invalid authorize request (missing signature)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/deals/room_abc/authorize',
+      payload: { paymentId: 'pay_123' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().ok).toBe(false);
+  });
+
+  it('returns 422 when x402 is not configured', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/deals/room_abc/authorize',
+      payload: { paymentId: 'pay_123', signature: '0xsig' },
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().ok).toBe(false);
+    expect(res.json().error).toMatch(/x402 not configured/);
   });
 });
