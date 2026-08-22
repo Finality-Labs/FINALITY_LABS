@@ -62,3 +62,17 @@ flowchart TD
 
     K --> N[Payment Verification]
     N --> M
+```
+## Core Components
+
+| Component             |   Port | Package                    | Purpose                                 |
+| --------------------- | -----: | -------------------------- | --------------------------------------- |
+| Intake API            | `3001` | `packages/intake`          | Intent/offer management and matchmaking |
+| Negotiation WebSocket | `3002` | `packages/negotiate`       | Real-time agent negotiation             |
+| Chain / Settlement    | `3003` | `packages/chain`           | Payment and settlement                  |
+| Verification          |      — | `packages/verification`    | Verification pipeline                   |
+| Negotiate Brain       |      — | `packages/negotiate-brain` | Automated negotiation logic             |
+| Reference Agent       |      — | `packages/reference-agent` | E2E agent client                        |
+| Orchestrator          | `3000` | `packages/orchestrator`    | Starts services and E2E flows           |
+| Frontend              | `3000` | `frontend`                 | Dashboard, wallet and verification UI   |
+
