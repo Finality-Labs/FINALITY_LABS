@@ -33,3 +33,32 @@ https://finality-labs.github.io/finality-labs-docs/
 The documentation contains architecture details, APIs, services, implementation notes, and integration information.
 
 ---
+
+
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A[Buyer Agent] --> B[Frontend]
+    C[Seller Agent] --> D[Intake API :3001]
+
+    B --> D
+    D --> E[Matchmaker]
+
+    E --> F[Negotiation WS :3002]
+
+    F --> G[Negotiation Brain]
+    G --> F
+
+    F --> H[Verification Layer]
+
+    H -->|Verified| I[Chain / Settlement :3003]
+    H -->|Blocked| J[Await Seller Completion / Buyer Approval]
+
+    I --> K[GOAT Testnet3]
+    I --> L[ERC-8004 Identity]
+    I --> M[ERC-8004 Reputation]
+
+    K --> N[Payment Verification]
+    N --> M
